@@ -27,6 +27,12 @@ tasks:
       - go vet ./...
       - go test ./...
 
+  coverage:
+    desc: Run coverage
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out
+
   build:
     desc: Build binary
     cmds:

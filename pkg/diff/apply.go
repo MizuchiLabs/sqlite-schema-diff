@@ -14,10 +14,16 @@ type ApplyOptions struct {
 	DryRun          bool
 	SkipDestructive bool
 	Backup          bool
+	ShowChanges     bool
 }
 
 // Apply applies schema changes to a database
-func Apply(dbPath string, changes []Change, opts ApplyOptions) error {
+func Apply(dbPath, schemaDir string, opts ApplyOptions) error {
+	changes, err := Compare(dbPath, schemaDir)
+	if err != nil {
+		return err
+	}
+
 	if opts.DryRun || len(changes) == 0 {
 		return nil
 	}
@@ -34,6 +40,10 @@ func Apply(dbPath string, changes []Change, opts ApplyOptions) error {
 		if len(changes) == 0 {
 			return nil
 		}
+	}
+
+	if opts.ShowChanges {
+		ShowChanges(changes)
 	}
 
 	db, err := sql.Open("sqlite", dbPath)

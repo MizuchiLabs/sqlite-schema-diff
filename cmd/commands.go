@@ -136,9 +136,10 @@ var applyCMD = &cli.Command{
 			DryRun:          dryRun,
 			SkipDestructive: skipDestructive,
 			Backup:          backup,
+			ShowChanges:     true,
 		}
 
-		if err := diff.ApplySchema(dbPath, schemaDir, opts); err != nil {
+		if err := diff.Apply(dbPath, schemaDir, opts); err != nil {
 			return fmt.Errorf("apply changes: %w", err)
 		}
 

@@ -36,21 +36,6 @@ func CompareDatabases(fromDB, toDB string) ([]Change, error) {
 	return Diff(from, to), nil
 }
 
-// ApplySchema applies a schema directory to a database
-func ApplySchema(dbPath, schemaDir string, opts ApplyOptions) error {
-	changes, err := Compare(dbPath, schemaDir)
-	if err != nil {
-		return err
-	}
-
-	if len(changes) == 0 {
-		return nil
-	}
-
-	ShowChanges(changes)
-	return Apply(dbPath, changes, opts)
-}
-
 // ShowChanges prints a list of changes
 func ShowChanges(changes []Change) {
 	for _, c := range changes {
