@@ -1,283 +1,183 @@
 # sqlite-schema-diff
 
-A lightweight SQLite schema diff tool that replaces traditional migrations. Define your database schema in SQL files and let the tool handle synchronization.
+A lightweight tool that compares SQLite database schemas against `.sql` files and applies changes automatically. Replaces traditional migrations with a schema-first approach.
 
-## Features
+## Quick Start
 
-- **Schema-first approach**: Define tables, indexes, views, and triggers in `.sql` files
-- **Automatic diffing**: Compare current database state with desired schema
-- **Safe migrations**: Warns on destructive operations with confirmation prompts
-- **Library and CLI**: Use as a command-line tool or import as a Go library
-- **Modern SQLite**: Targets latest SQLite versions with ALTER TABLE support
+```bash
+# 1. Define your schema in SQL files
+echo "CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE
+);" > schema/users.sql
+
+# 2. See what changes are needed
+sqlite-schema-diff diff --database app.db --schema ./schema
+
+# 3. Apply changes
+sqlite-schema-diff apply --database app.db --schema ./schema
+```
 
 ## Installation
 
 ```bash
-go install github.com/yourusername/sqlite-schema-diff/cmd@latest
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/yourusername/sqlite-schema-diff
+# From source
+git clone https://github.com/mizuchilabs/sqlite-schema-diff
 cd sqlite-schema-diff
 go build -o sqlite-schema-diff ./cmd
+
+# Or install globally
+go install ./cmd
 ```
 
-## Quick Start
+## CLI Commands
 
-### 1. Define your schema
+| Command | Description                      |
+| ------- | -------------------------------- |
+| `diff`  | Show schema differences          |
+| `apply` | Apply schema changes to database |
+| `dump`  | Export database schema to files  |
 
-Create a directory with `.sql` files:
-
-```sql
--- schema/users.sql
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
-    username TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_users_email ON users(email);
-```
-
-### 2. Compare schema against database
+### `diff` - Preview changes
 
 ```bash
-sqlite-schema-diff diff --database myapp.db --schema ./schema
+sqlite-schema-diff diff --database app.db --schema ./schema
+
+# Output as SQL
+sqlite-schema-diff diff --database app.db --schema ./schema --sql
 ```
 
-### 3. Apply changes
-
-```bash
-sqlite-schema-diff apply --database myapp.db --schema ./schema
-```
-
-## CLI Usage
-
-### Commands
-
-#### `diff` - Show schema differences
-
-```bash
-sqlite-schema-diff diff --database myapp.db --schema ./schema
-
-# Output migration SQL
-sqlite-schema-diff diff --database myapp.db --schema ./schema --sql
-```
-
-#### `apply` - Apply schema changes
+### `apply` - Apply changes
 
 ```bash
 # Interactive (prompts for destructive changes)
-sqlite-schema-diff apply --database myapp.db --schema ./schema
+sqlite-schema-diff apply --database app.db --schema ./schema
 
-# Dry run (show what would happen)
-sqlite-schema-diff apply --database myapp.db --schema ./schema --dry-run
+# Dry run - show what would happen
+sqlite-schema-diff apply --database app.db --schema ./schema --dry-run
 
 # Force apply without confirmation
-sqlite-schema-diff apply --database myapp.db --schema ./schema --force
+sqlite-schema-diff apply --database app.db --schema ./schema --force
 
-# Skip destructive changes
-sqlite-schema-diff apply --database myapp.db --schema ./schema --skip-destructive
+# Skip destructive operations
+sqlite-schema-diff apply --database app.db --schema ./schema --skip-destructive
 
-# No backup
-sqlite-schema-diff apply --database myapp.db --schema ./schema --backup=false
+# Skip backup
+sqlite-schema-diff apply --database app.db --schema ./schema --backup=false
 ```
 
-#### `dump` - Export database schema to files
+### `dump` - Export existing schema
 
 ```bash
-sqlite-schema-diff dump --database myapp.db --output ./schema
+sqlite-schema-diff dump --database app.db --output ./dump
 ```
 
-This creates organized schema files:
-
-- `tables.sql` - All table definitions
-- `indexes.sql` - All indexes
-- `views.sql` - All views
-- `triggers.sql` - All triggers
+Outputs: `tables.sql`, `indexes.sql`, `views.sql`, `triggers.sql`
 
 ## Library Usage
 
-Use sqlite-schema-diff as a library in your Go projects:
-
 ```go
-package main
-
 import (
     "fmt"
     "log"
 
     "sqlite-schema-diff/pkg/diff"
-    "sqlite-schema-diff/pkg/parser"
 )
 
 func main() {
     // Compare database with schema directory
-    changes, err := diff.CompareSchemas("myapp.db", "./schema")
+    changes, err := diff.Compare("app.db", "./schema")
     if err != nil {
         log.Fatal(err)
     }
 
-    // Check for changes
     if len(changes) == 0 {
-        fmt.Println("Schema is up to date!")
+        fmt.Println("Schema is up to date")
         return
     }
 
     // Print changes
-    for _, change := range changes {
-        fmt.Printf("%s: %s\n", change.Type, change.Description)
+    for _, c := range changes {
+        symbol := "+"
+        if c.Destructive {
+            symbol = "-"
+        }
+        fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
     }
 
     // Apply changes
     opts := diff.ApplyOptions{
-        DryRun:            false,
-        SkipDestructive:   false,
-        BackupBeforeApply: true,
+        DryRun:          false,
+        SkipDestructive: false,
+        Backup:          true,
     }
 
-    if err := diff.Apply("myapp.db", changes, opts); err != nil {
+    if err := diff.Apply("app.db", changes, opts); err != nil {
         log.Fatal(err)
     }
-
-    fmt.Println("Schema updated successfully!")
 }
 ```
 
-### Advanced Library Usage
+### Library Functions
 
-```go
-// Compare two databases
-changes, err := diff.CompareDatabases("old.db", "new.db")
-
-// Extract schema from database
-schema, err := parser.ExtractFromDatabase("myapp.db")
-
-// Load schema from directory
-schema, err := parser.LoadSchemaFromDirectory("./schema")
-
-// Parse SQL file
-schema, err := parser.ParseSchemaFile(sqlContent)
-
-// Generate migration SQL
-sql := diff.GenerateSQL(changes)
-
-// Check for destructive changes
-hasDestructive := diff.HasDestructiveChanges(changes)
-```
-
-## Destructive Operations
-
-The tool identifies and warns about operations that may lose data:
-
-- **DROP TABLE**: Deletes entire table and data
-- **DROP COLUMN**: Loses column data (requires table recreation in SQLite)
-- **RECREATE TABLE**: May lose data if column types change incompatibly
-
-When applying changes:
-
-- Interactive mode prompts for confirmation
-- Use `--force` to skip prompts
-- Use `--skip-destructive` to skip these operations
-- Backups are created by default (use `--backup=false` to disable)
+| Function                            | Description                        |
+| ----------------------------------- | ---------------------------------- |
+| `diff.Compare(dbPath, schemaDir)`   | Compare database with schema files |
+| `diff.CompareDatabases(from, to)`   | Compare two databases              |
+| `diff.GenerateSQL(changes)`         | Generate migration SQL             |
+| `diff.HasDestructive(changes)`      | Check for destructive changes      |
+| `diff.Apply(dbPath, changes, opts)` | Apply changes to database          |
 
 ## Schema Organization
 
-You can organize schema files however you like:
-
-```
-schema/
-├── 01_users.sql
-├── 02_posts.sql
-├── 03_comments.sql
-├── indexes/
-│   ├── users.sql
-│   └── posts.sql
-└── triggers/
-    └── audit.sql
-```
-
-Files are loaded alphabetically and merged. Duplicate object names will cause an error.
-
-## How It Works
-
-1. **Extract current schema**: Queries `sqlite_master` to get current database state
-2. **Load target schema**: Parses `.sql` files from schema directory
-3. **Compute diff**: Compares schemas and generates change list
-4. **Generate SQL**: Creates migration statements
-5. **Apply changes**: Executes migration in a transaction with foreign keys disabled
-
-### Supported Objects
-
-- ✅ Tables
-- ✅ Indexes (including unique, partial, and expression indexes)
-- ✅ Views
-- ✅ Triggers
-- ✅ Foreign keys
-- ✅ Check constraints
-- ✅ Unique constraints
-
-## Comparison with Traditional Migrations
-
-### Traditional Migrations
-
-```
-migrations/
-├── 001_create_users.sql
-├── 002_add_email_index.sql
-├── 003_create_posts.sql
-├── 004_alter_users.sql
-└── ... (grows forever)
-```
-
-Problems:
-
-- Migration files accumulate indefinitely
-- Hard to see current schema state
-- Merge conflicts on migration numbers
-- Must track applied migrations
-
-### Schema-First Approach
+Organize `.sql` files any way you like:
 
 ```
 schema/
 ├── users.sql
 ├── posts.sql
-└── indexes.sql
+├── indexes.sql
+└── triggers.sql
 ```
 
-Benefits:
+Files will be sorted and merged. Each object (table, index, etc.) must have a unique name.
 
-- Schema is the source of truth
-- Easy to review current state
-- No migration numbering conflicts
-- Tool handles synchronization
+## What It Does
 
-## Limitations
+1. **Extracts** current schema from database via `sqlite_master`
+2. **Parses** your `.sql` files
+3. **Compares** and identifies missing/changed objects
+4. **Generates** SQLite-compatible migration SQL
+5. **Applies** changes with transaction safety
 
-- **Complex table alterations**: SQLite has limited ALTER TABLE support. The tool recreates tables when necessary, which may lose data if not careful.
-- **Data migrations**: The tool doesn't handle data transformations. For complex migrations, you may need custom SQL.
-- **Column renames**: SQLite doesn't distinguish renames from drop+add, so data will be lost unless you manually handle it.
+## Supported Objects
+
+- Tables (CREATE TABLE)
+- Indexes (CREATE INDEX)
+- Views (CREATE VIEW)
+- Triggers (CREATE TRIGGER)
+- Foreign keys
+- Check constraints
+- Unique constraints
+
+## Destructive Changes
+
+The tool warns about operations that may lose data:
+
+- `DROP TABLE` - deletes table and all data
+- `DROP COLUMN` - loses column data
+- `RECREATE TABLE` - may lose data on type changes
+
+For destructive changes:
+
+- Interactive mode prompts for confirmation
+- Use `--force` to skip prompts
+- Use `--skip-destructive` to skip these operations
+- Backups are created by default (`--backup=false` to disable)
 
 ## Examples
 
-See `examples/` directory for sample schema files.
-
-## Development
-
-```bash
-# Run tests
-go test ./...
-
-# Build
-go build -o sqlite-schema-diff ./cmd
-
-# Run example
-./sqlite-schema-diff diff --database examples/test.db --schema examples/schema
-```
+See `examples/` directory for working examples.
 
 ## License
 
@@ -286,3 +186,4 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
