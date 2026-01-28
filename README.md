@@ -12,6 +12,9 @@ Traditional migrations are error-prone and hard to maintain. Instead:
 
 No more numbered migration files. No more merge conflicts. Just SQL.
 
+> [!WARNING]
+> This tool is under active development. While it has been tested, not every edge case is covered. **Always back up your database before applying changes.** You are responsible for your data.
+
 ## Installation
 
 ```bash
