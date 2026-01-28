@@ -53,9 +53,8 @@ var diffCMD = &cli.Command{
 		if outputSQL {
 			fmt.Println(diff.GenerateSQL(changes))
 		} else {
-			printChanges(changes)
+			diff.ShowChanges(changes)
 		}
-
 		return nil
 	},
 }
@@ -114,7 +113,6 @@ var applyCMD = &cli.Command{
 		}
 
 		fmt.Println("Schema changes to be applied:")
-		printChanges(changes)
 
 		// Confirm destructive changes
 		if diff.HasDestructive(changes) && !force && !dryRun {
@@ -140,7 +138,7 @@ var applyCMD = &cli.Command{
 			Backup:          backup,
 		}
 
-		if err := diff.Apply(dbPath, changes, opts); err != nil {
+		if err := diff.ApplySchema(dbPath, schemaDir, opts); err != nil {
 			return fmt.Errorf("apply changes: %w", err)
 		}
 
@@ -172,25 +170,6 @@ var dumpCMD = &cli.Command{
 
 		return dumpSchema(dbPath, outputDir)
 	},
-}
-
-func printChanges(changes []diff.Change) {
-	for _, c := range changes {
-		symbol := "+"
-		if c.Destructive {
-			symbol = "-"
-		}
-		fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
-	}
-
-	destructive := 0
-	for _, c := range changes {
-		if c.Destructive {
-			destructive++
-		}
-	}
-
-	fmt.Printf("\nTotal changes: %d (%d destructive)\n", len(changes), destructive)
 }
 
 func dumpSchema(dbPath, outputDir string) error {

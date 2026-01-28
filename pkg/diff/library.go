@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"fmt"
+
 	"sqlite-schema-diff/pkg/parser"
 )
 
@@ -45,5 +47,26 @@ func ApplySchema(dbPath, schemaDir string, opts ApplyOptions) error {
 		return nil
 	}
 
+	ShowChanges(changes)
 	return Apply(dbPath, changes, opts)
+}
+
+// ShowChanges prints a list of changes
+func ShowChanges(changes []Change) {
+	for _, c := range changes {
+		symbol := "+"
+		if c.Destructive {
+			symbol = "-"
+		}
+		fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
+	}
+
+	destructive := 0
+	for _, c := range changes {
+		if c.Destructive {
+			destructive++
+		}
+	}
+
+	fmt.Printf("\nTotal changes: %d (%d destructive)\n", len(changes), destructive)
 }
