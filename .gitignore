@@ -1,0 +1,38 @@
+# Binaries
+sqlite-schema-diff
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# SQLite databases (examples)
+*.db
+*.db-shm
+*.db-wal
+*.backup
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Migration output
+migration.sql
