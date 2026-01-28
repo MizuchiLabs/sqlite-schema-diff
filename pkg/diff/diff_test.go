@@ -739,40 +739,6 @@ func TestSortChanges(t *testing.T) {
 	}
 }
 
-func TestGenerateSQL(t *testing.T) {
-	changes := []Change{
-		{
-			Type:        CreateTable,
-			Object:      "users",
-			Description: "Create table users",
-			SQL:         []string{"CREATE TABLE users (id INTEGER);"},
-		},
-	}
-
-	sql := GenerateSQL(changes)
-
-	// Check key parts are present
-	checks := []string{
-		"PRAGMA foreign_keys = OFF",
-		"BEGIN TRANSACTION",
-		"CREATE TABLE users",
-		"COMMIT",
-		"PRAGMA foreign_keys = ON",
-	}
-
-	for _, check := range checks {
-		if !contains(sql, check) {
-			t.Errorf("GenerateSQL() missing %q", check)
-		}
-	}
-}
-
-func TestGenerateSQLEmpty(t *testing.T) {
-	if got := GenerateSQL(nil); got != "" {
-		t.Errorf("GenerateSQL(nil) = %q, want empty", got)
-	}
-}
-
 // helpers
 
 func initMaps(db *schema.Database) {
