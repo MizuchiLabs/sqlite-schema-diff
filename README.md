@@ -1,179 +1,155 @@
 # sqlite-schema-diff
 
-A lightweight tool that compares SQLite database schemas against `.sql` files and applies changes automatically. Replaces traditional migrations with a schema-first approach.
+A schema-first approach to SQLite migrations. Define your schema in `.sql` files, and let the tool figure out what changed.
 
-## Quick Start
+## Why?
 
-```bash
-# 1. Define your schema in SQL files
-echo "CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE
-);" > schema/users.sql
+Traditional migrations are error-prone and hard to maintain. Instead:
 
-# 2. See what changes are needed
-sqlite-schema-diff diff --database app.db --schema ./schema
+1. **Define** your desired schema in SQL files
+2. **Diff** against your database to see what changed
+3. **Apply** changes automatically
 
-# 3. Apply changes
-sqlite-schema-diff apply --database app.db --schema ./schema
-```
+No more numbered migration files. No more merge conflicts. Just SQL.
 
 ## Installation
 
 ```bash
-# From source
+go install github.com/mizuchilabs/sqlite-schema-diff/cmd@latest
+```
+
+Or build from source:
+
+```bash
 git clone https://github.com/mizuchilabs/sqlite-schema-diff
 cd sqlite-schema-diff
 go build -o sqlite-schema-diff ./cmd
-
-# Or install globally
-go install ./cmd
 ```
 
-## CLI Commands
+## Quick Start
 
-| Command | Description                      |
-| ------- | -------------------------------- |
-| `diff`  | Show schema differences          |
-| `apply` | Apply schema changes to database |
-| `dump`  | Export database schema to files  |
+```bash
+# Define your schema
+cat > schema/users.sql << 'EOF'
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 
-### `diff` - Preview changes
+CREATE INDEX idx_users_email ON users(email);
+EOF
+
+# Preview changes
+sqlite-schema-diff diff --database app.db --schema ./schema
+
+# Apply changes
+sqlite-schema-diff apply --database app.db --schema ./schema
+```
+
+## CLI Reference
+
+### `diff` — Preview changes
 
 ```bash
 sqlite-schema-diff diff --database app.db --schema ./schema
-
-# Output as SQL
-sqlite-schema-diff diff --database app.db --schema ./schema --sql
+sqlite-schema-diff diff --database app.db --schema ./schema --sql  # Output raw SQL
 ```
 
-### `apply` - Apply changes
+### `apply` — Apply changes
 
 ```bash
-# Interactive (prompts for destructive changes)
 sqlite-schema-diff apply --database app.db --schema ./schema
-
-# Dry run - show what would happen
-sqlite-schema-diff apply --database app.db --schema ./schema --dry-run
-
-# Force apply without confirmation
-sqlite-schema-diff apply --database app.db --schema ./schema --force
-
-# Skip destructive operations
-sqlite-schema-diff apply --database app.db --schema ./schema --skip-destructive
-
-# Skip backup
-sqlite-schema-diff apply --database app.db --schema ./schema --backup=false
 ```
 
-### `dump` - Export existing schema
+| Flag                  | Description                               |
+| --------------------- | ----------------------------------------- |
+| `--dry-run`           | Show what would happen without applying   |
+| `--force`             | Skip confirmation for destructive changes |
+| `--skip-destructive`  | Skip DROP operations                      |
+| `--backup=false`      | Disable automatic backup                  |
+| `--show-changes=true` | Show changes before applying              |
+
+### `dump` — Export existing schema
 
 ```bash
-sqlite-schema-diff dump --database app.db --output ./dump
+sqlite-schema-diff dump --database app.db --output ./schema
 ```
-
-Outputs: `tables.sql`, `indexes.sql`, `views.sql`, `triggers.sql`
 
 ## Library Usage
 
 ```go
-import (
-    "fmt"
-    "log"
+import "github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 
-    "sqlite-schema-diff/pkg/diff"
-)
-
-func main() {
-    // Compare database with schema directory
-    changes, err := diff.Compare("app.db", "./schema")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    if len(changes) == 0 {
-        fmt.Println("Schema is up to date")
-        return
-    }
-
-    // Print changes
-    for _, c := range changes {
-        symbol := "+"
-        if c.Destructive {
-            symbol = "-"
-        }
-        fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
-    }
-
-    // Apply changes
-    opts := diff.ApplyOptions{
-        DryRun:          false,
-        SkipDestructive: false,
-        Backup:          true,
-    }
-
-    if err := diff.Apply("app.db", changes, opts); err != nil {
-        log.Fatal(err)
-    }
+// Compare and get changes
+changes, err := diff.Compare("app.db", "./schema")
+if err != nil {
+    log.Fatal(err)
 }
+
+// Check what's changing
+for _, c := range changes {
+    fmt.Printf("%s: %s (destructive: %v)\n", c.Type, c.Description, c.Destructive)
+}
+
+// Generate SQL without applying
+sql := diff.GenerateSQL(changes)
+
+// Apply changes
+err = diff.Apply("app.db", "./schema", diff.ApplyOptions{
+    Backup:          true,
+    SkipDestructive: false,
+})
 ```
 
-### Library Functions
+### Available Functions
 
-| Function                            | Description                        |
-| ----------------------------------- | ---------------------------------- |
-| `diff.Compare(dbPath, schemaDir)`   | Compare database with schema files |
-| `diff.CompareDatabases(from, to)`   | Compare two databases              |
-| `diff.GenerateSQL(changes)`         | Generate migration SQL             |
-| `diff.HasDestructive(changes)`      | Check for destructive changes      |
-| `diff.Apply(dbPath, changes, opts)` | Apply changes to database          |
+| Function                         | Description                     |
+| -------------------------------- | ------------------------------- |
+| `Compare(dbPath, schemaDir)`     | Diff database against SQL files |
+| `CompareDatabases(fromDB, toDB)` | Diff two databases              |
+| `GenerateSQL(changes)`           | Generate migration SQL          |
+| `HasDestructive(changes)`        | Check for destructive changes   |
+| `Apply(dbPath, schemaDir, opts)` | Apply changes to database       |
+
+## Supported Objects
+
+- Tables (with columns, constraints, foreign keys)
+- Indexes
+- Views
+- Triggers
+
+## Destructive Changes
+
+Operations that may lose data are flagged as destructive:
+
+| Operation        | Risk                          |
+| ---------------- | ----------------------------- |
+| `DROP TABLE`     | Deletes table and all data    |
+| `DROP COLUMN`    | Loses column data             |
+| `RECREATE TABLE` | Required for some alterations |
+
+By default, the CLI:
+
+- Creates a backup before applying (`app.db.backup`)
+- Prompts for confirmation on destructive changes
+
+Use `--skip-destructive` to safely apply only additive changes.
 
 ## Schema Organization
 
-Organize `.sql` files any way you like:
+Organize your `.sql` files however you like:
 
 ```
 schema/
-├── users.sql
-├── posts.sql
+├── tables/
+│   ├── users.sql
+│   └── posts.sql
 ├── indexes.sql
 └── triggers.sql
 ```
 
-Files will be sorted and merged. Each object (table, index, etc.) must have a unique name.
-
-## What It Does
-
-1. **Extracts** current schema from database via `sqlite_master`
-2. **Parses** your `.sql` files
-3. **Compares** and identifies missing/changed objects
-4. **Generates** SQLite-compatible migration SQL
-5. **Applies** changes with transaction safety
-
-## Supported Objects
-
-- Tables (CREATE TABLE)
-- Indexes (CREATE INDEX)
-- Views (CREATE VIEW)
-- Triggers (CREATE TRIGGER)
-- Foreign keys
-- Check constraints
-- Unique constraints
-
-## Destructive Changes
-
-The tool warns about operations that may lose data:
-
-- `DROP TABLE` - deletes table and all data
-- `DROP COLUMN` - loses column data
-- `RECREATE TABLE` - may lose data on type changes
-
-For destructive changes:
-
-- Interactive mode prompts for confirmation
-- Use `--force` to skip prompts
-- Use `--skip-destructive` to skip these operations
-- Backups are created by default (`--backup=false` to disable)
+All files are merged. Each object name must be unique across all files.
 
 ## Examples
 
@@ -186,4 +162,3 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
