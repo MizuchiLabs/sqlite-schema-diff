@@ -119,7 +119,9 @@ func TestApply_Backup(t *testing.T) {
 
 	// Verify backup has original schema
 	db, _ := sql.Open("sqlite", backupPath)
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users')").Scan(&count); err != nil {
@@ -150,7 +152,9 @@ func createTestDB(t *testing.T, schema string) string {
 	if err != nil {
 		t.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("exec schema: %v", err)
