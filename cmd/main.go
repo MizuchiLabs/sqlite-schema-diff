@@ -33,13 +33,6 @@ func main() {
 				Aliases: []string{"v"},
 				Usage:   "Print version information",
 			},
-			&cli.BoolFlag{
-				Name:    "debug",
-				Aliases: []string{"d"},
-				Usage:   "Enable debug logging",
-				Value:   false,
-				Sources: cli.EnvVars("DEBUG"),
-			},
 		},
 	}
 

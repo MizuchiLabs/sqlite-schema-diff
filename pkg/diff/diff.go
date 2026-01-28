@@ -4,7 +4,6 @@ package diff
 import (
 	"cmp"
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -206,22 +205,16 @@ func columnChanged(from, to schema.Column) bool {
 	fromDefault := ""
 	toDefault := ""
 	if from.Default != nil {
-		fromDefault = normalizeDefault(*from.Default)
+		fromDefault = strings.ToLower(strings.TrimSpace(*from.Default))
 	}
 	if to.Default != nil {
-		toDefault = normalizeDefault(*to.Default)
+		toDefault = strings.ToLower(strings.TrimSpace(*to.Default))
 	}
 	if fromDefault != toDefault {
 		return true
 	}
 
 	return false
-}
-
-func normalizeDefault(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.ToLower(s)
-	return s
 }
 
 func generateAddColumnSQL(tableName string, col schema.Column) string {
@@ -572,9 +565,4 @@ func GenerateSQL(changes []Change) string {
 	sb.WriteString("PRAGMA foreign_keys = ON;\n")
 
 	return sb.String()
-}
-
-// SortedKeys returns sorted keys from a map
-func SortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
-	return slices.Sorted(maps.Keys(m))
 }

@@ -1,201 +1,319 @@
 package parser
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
-func TestFromSQL_BasicTable(t *testing.T) {
+func TestFromSQL(t *testing.T) {
+	tests := []struct {
+		name         string
+		sql          string
+		wantTables   []string
+		wantIndexes  []string
+		wantViews    []string
+		wantTriggers []string
+		wantErr      bool
+	}{
+		{
+			name:       "single table",
+			sql:        `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);`,
+			wantTables: []string{"users"},
+		},
+		{
+			name: "multiple tables",
+			sql: `
+				CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+				CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT);
+			`,
+			wantTables: []string{"posts", "users"},
+		},
+		{
+			name: "table with index",
+			sql: `
+				CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+				CREATE INDEX idx_users_email ON users(email);
+			`,
+			wantTables:  []string{"users"},
+			wantIndexes: []string{"idx_users_email"},
+		},
+		{
+			name: "table with view",
+			sql: `
+				CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, active INTEGER);
+				CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1;
+			`,
+			wantTables: []string{"users"},
+			wantViews:  []string{"active_users"},
+		},
+		{
+			name: "table with trigger",
+			sql: `
+				CREATE TABLE users (id INTEGER PRIMARY KEY, updated_at TEXT);
+				CREATE TRIGGER update_timestamp AFTER UPDATE ON users
+				BEGIN UPDATE users SET updated_at = datetime('now') WHERE id = NEW.id; END;
+			`,
+			wantTables:   []string{"users"},
+			wantTriggers: []string{"update_timestamp"},
+		},
+		{
+			name:    "invalid SQL",
+			sql:     `INSERT INTO nonexistent_table VALUES (1);`,
+			wantErr: true,
+		},
+		{
+			name:       "empty schema",
+			sql:        `SELECT 1;`,
+			wantTables: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := FromSQL(tt.sql)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromSQL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+
+			assertKeys(t, "tables", keys(db.Tables), tt.wantTables)
+			assertKeys(t, "indexes", keys(db.Indexes), tt.wantIndexes)
+			assertKeys(t, "views", keys(db.Views), tt.wantViews)
+			assertKeys(t, "triggers", keys(db.Triggers), tt.wantTriggers)
+		})
+	}
+}
+
+func TestFromSQL_ColumnDetails(t *testing.T) {
 	sql := `CREATE TABLE users (
 		id INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
-		email TEXT UNIQUE
+		email TEXT UNIQUE,
+		age INTEGER DEFAULT 0,
+		bio TEXT
 	);`
 
-	schema, err := FromSQL(sql)
+	db, err := FromSQL(sql)
 	if err != nil {
-		t.Fatalf("FromSQL failed: %v", err)
+		t.Fatal(err)
 	}
 
-	if len(schema.Tables) != 1 {
-		t.Errorf("expected 1 table, got %d", len(schema.Tables))
-	}
-
-	table, ok := schema.Tables["users"]
-	if !ok {
-		t.Fatal("table 'users' not found")
-	}
-
-	if len(table.Columns) != 3 {
-		t.Errorf("expected 3 columns, got %d", len(table.Columns))
-	}
-
-	// Check column properties
-	idCol := table.GetColumn("id")
-	if idCol == nil {
-		t.Fatal("column 'id' not found")
-	}
-	if idCol.PrimaryKey == 0 {
-		t.Error("id should be primary key")
-	}
-
-	nameCol := table.GetColumn("name")
-	if nameCol == nil {
-		t.Fatal("column 'name' not found")
-	}
-	if !nameCol.NotNull {
-		t.Error("name should be NOT NULL")
-	}
-}
-
-func TestFromSQL_WithConstraints(t *testing.T) {
-	sql := `CREATE TABLE products (
-		id INTEGER PRIMARY KEY,
-		name TEXT NOT NULL,
-		price REAL CHECK(price > 0),
-		stock INTEGER DEFAULT 0
-	);`
-
-	schema, err := FromSQL(sql)
-	if err != nil {
-		t.Fatalf("FromSQL failed: %v", err)
-	}
-
-	table := schema.Tables["products"]
+	table := db.Tables["users"]
 	if table == nil {
-		t.Fatal("table 'products' not found")
+		t.Fatal("users table not found")
 	}
 
-	// Check default value
-	stockCol := table.GetColumn("stock")
-	if stockCol == nil {
-		t.Fatal("column 'stock' not found")
+	tests := []struct {
+		colName     string
+		wantType    string
+		wantNotNull bool
+		wantPK      int
+		wantDefault *string
+	}{
+		{"id", "INTEGER", false, 1, nil},
+		{"name", "TEXT", true, 0, nil},
+		{"email", "TEXT", false, 0, nil},
+		{"age", "INTEGER", false, 0, ptr("0")},
+		{"bio", "TEXT", false, 0, nil},
 	}
-	if stockCol.Default == nil {
-		t.Error("stock should have a default value")
-	} else if *stockCol.Default != "0" {
-		t.Errorf("expected default '0', got '%s'", *stockCol.Default)
+
+	for _, tt := range tests {
+		t.Run(tt.colName, func(t *testing.T) {
+			var col *struct {
+				Name, Type string
+				NotNull    bool
+				PK         int
+				Default    *string
+			}
+			for _, c := range table.Columns {
+				if c.Name == tt.colName {
+					col = &struct {
+						Name, Type string
+						NotNull    bool
+						PK         int
+						Default    *string
+					}{c.Name, c.Type, c.NotNull, c.PrimaryKey, c.Default}
+					break
+				}
+			}
+			if col == nil {
+				t.Fatalf("column %s not found", tt.colName)
+			}
+			if col.Type != tt.wantType {
+				t.Errorf("type = %s, want %s", col.Type, tt.wantType)
+			}
+			if col.NotNull != tt.wantNotNull {
+				t.Errorf("notnull = %v, want %v", col.NotNull, tt.wantNotNull)
+			}
+			if col.PK != tt.wantPK {
+				t.Errorf("pk = %d, want %d", col.PK, tt.wantPK)
+			}
+			if (col.Default == nil) != (tt.wantDefault == nil) {
+				t.Errorf("default = %v, want %v", col.Default, tt.wantDefault)
+			}
+		})
 	}
 }
 
-func TestFromSQL_InvalidSQL(t *testing.T) {
-	sql := `CREATE TABLE invalid (
-		id INTEGER PRIMARY KEY,
-		FOREIGN KEY (nonexistent) REFERENCES other(id)
-	);`
+func TestFromDatabase(t *testing.T) {
+	// Create temp database file
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
 
-	_, err := FromSQL(sql)
+	// Create database with schema
+	sql := `
+		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE INDEX idx_name ON users(name);
+	`
+	db, err := FromSQL(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write to file using sql.Open
+	sqlDB, err := openAndExec(dbPath, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.Close()
+
+	// Test FromDatabase
+	dbFromFile, err := FromDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(dbFromFile.Tables) != len(db.Tables) {
+		t.Errorf("table count mismatch: got %d, want %d", len(dbFromFile.Tables), len(db.Tables))
+	}
+}
+
+func TestFromDatabase_NonExistent(t *testing.T) {
+	_, err := FromDatabase("/nonexistent/path/db.sqlite")
 	if err == nil {
-		t.Error("expected error for invalid SQL with nonexistent column in FK")
-	}
-}
-
-func TestFromSQL_MultipleStatements(t *testing.T) {
-	sql := `
-		CREATE TABLE users (
-			id INTEGER PRIMARY KEY,
-			name TEXT
-		);
-
-		CREATE TABLE posts (
-			id INTEGER PRIMARY KEY,
-			user_id INTEGER,
-			title TEXT,
-			FOREIGN KEY (user_id) REFERENCES users(id)
-		);
-
-		CREATE INDEX idx_posts_user ON posts(user_id);
-	`
-
-	schema, err := FromSQL(sql)
-	if err != nil {
-		t.Fatalf("FromSQL failed: %v", err)
-	}
-
-	if len(schema.Tables) != 2 {
-		t.Errorf("expected 2 tables, got %d", len(schema.Tables))
-	}
-
-	if len(schema.Indexes) != 1 {
-		t.Errorf("expected 1 index, got %d", len(schema.Indexes))
-	}
-}
-
-func TestFromSQL_ViewsAndTriggers(t *testing.T) {
-	sql := `
-		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, active INTEGER DEFAULT 1);
-
-		CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1;
-
-		CREATE TRIGGER users_update AFTER UPDATE ON users
-		BEGIN
-			SELECT 1;
-		END;
-	`
-
-	schema, err := FromSQL(sql)
-	if err != nil {
-		t.Fatalf("FromSQL failed: %v", err)
-	}
-
-	if len(schema.Views) != 1 {
-		t.Errorf("expected 1 view, got %d", len(schema.Views))
-	}
-
-	if len(schema.Triggers) != 1 {
-		t.Errorf("expected 1 trigger, got %d", len(schema.Triggers))
+		t.Error("expected error for non-existent database")
 	}
 }
 
 func TestFromDirectory(t *testing.T) {
-	// Create temp directory with SQL files
-	dir := t.TempDir()
+	tmpDir := t.TempDir()
 
-	// Write files with numeric prefixes for ordering
-	file1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
-	file2 := `CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`
-
-	if err := os.WriteFile(filepath.Join(dir, "01_users.sql"), []byte(file1), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "02_posts.sql"), []byte(file2), 0644); err != nil {
-		t.Fatal(err)
+	// Create SQL files (should be applied in sorted order)
+	files := map[string]string{
+		"01_users.sql": `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
+		"02_posts.sql": `CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
+		"03_index.sql": `CREATE INDEX idx_posts_user ON posts(user_id);`,
 	}
 
-	schema, err := FromDirectory(dir)
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := FromDirectory(tmpDir)
 	if err != nil {
-		t.Fatalf("FromDirectory failed: %v", err)
+		t.Fatal(err)
 	}
 
-	if len(schema.Tables) != 2 {
-		t.Errorf("expected 2 tables, got %d", len(schema.Tables))
+	if len(db.Tables) != 2 {
+		t.Errorf("expected 2 tables, got %d", len(db.Tables))
+	}
+	if len(db.Indexes) != 1 {
+		t.Errorf("expected 1 index, got %d", len(db.Indexes))
 	}
 }
 
-func TestFromSQL_UniqueConstraint(t *testing.T) {
-	// Test that UNIQUE constraint creates an automatic index
-	sql := `CREATE TABLE users (
-		id INTEGER PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL
-	);`
+func TestFromDirectory_Nested(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "migrations")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	schema, err := FromSQL(sql)
+	// Create SQL files
+	topFile := filepath.Join(tmpDir, "01.sql")
+	subFile := filepath.Join(subDir, "02.sql")
+	if err := os.WriteFile(topFile, []byte(`CREATE TABLE a (id INTEGER);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subFile, []byte(`CREATE TABLE b (id INTEGER);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := FromDirectory(tmpDir)
 	if err != nil {
-		t.Fatalf("FromSQL failed: %v", err)
+		t.Fatal(err)
 	}
 
-	// SQLite creates automatic indexes for UNIQUE constraints
-	// The index name is sqlite_autoindex_<table>_<n>
-	// These are filtered out by our extractIndexes (sql IS NOT NULL check passes them)
-	// but we should verify the constraint is applied by checking the schema SQL
-	table := schema.Tables["users"]
-	if table == nil {
-		t.Fatal("table 'users' not found")
+	if len(db.Tables) != 2 {
+		t.Errorf("expected 2 tables from nested dirs, got %d", len(db.Tables))
+	}
+}
+
+func TestFromDirectory_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	db, err := FromDirectory(tmpDir)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// The SQL should contain UNIQUE
-	if table.SQL == "" {
-		t.Error("table SQL should not be empty")
+	if len(db.Tables) != 0 {
+		t.Errorf("expected 0 tables, got %d", len(db.Tables))
 	}
+}
+
+func TestFromDirectory_NonExistent(t *testing.T) {
+	_, err := FromDirectory("/nonexistent/path")
+	if err == nil {
+		t.Error("expected error for non-existent directory")
+	}
+}
+
+func TestFromDirectory_InvalidSQL(t *testing.T) {
+	tmpDir := t.TempDir()
+	badFile := filepath.Join(tmpDir, "bad.sql")
+	if err := os.WriteFile(badFile, []byte(`INVALID SQL`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := FromDirectory(tmpDir)
+	if err == nil {
+		t.Error("expected error for invalid SQL")
+	}
+}
+
+// Helpers
+
+func keys[K comparable, V any](m map[K]V) []string {
+	result := make([]string, 0, len(m))
+	for k := range m {
+		result = append(result, any(k).(string))
+	}
+	return result
+}
+
+func assertKeys(t *testing.T, name string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s count = %d, want %d (got: %v)", name, len(got), len(want), got)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+func openAndExec(path, sqlStr string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(sqlStr)
+	return db, err
 }

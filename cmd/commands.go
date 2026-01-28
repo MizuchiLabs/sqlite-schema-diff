@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"sqlite-schema-diff/pkg/diff"
 	"sqlite-schema-diff/pkg/parser"
@@ -25,10 +27,10 @@ var diffCMD = &cli.Command{
 			Required: true,
 		},
 		&cli.StringFlag{
-			Name:     "schema",
-			Aliases:  []string{"s"},
-			Usage:    "Path to schema directory containing .sql files",
-			Required: true,
+			Name:    "schema",
+			Aliases: []string{"s"},
+			Value:   "schema",
+			Usage:   "Path to schema directory containing .sql files",
 		},
 		&cli.BoolFlag{
 			Name:  "sql",
@@ -70,10 +72,10 @@ var applyCMD = &cli.Command{
 			Required: true,
 		},
 		&cli.StringFlag{
-			Name:     "schema",
-			Aliases:  []string{"s"},
-			Usage:    "Path to schema directory containing .sql files",
-			Required: true,
+			Name:    "schema",
+			Aliases: []string{"s"},
+			Value:   "schema",
+			Usage:   "Path to schema directory containing .sql files",
 		},
 		&cli.BoolFlag{
 			Name:  "dry-run",
@@ -93,6 +95,11 @@ var applyCMD = &cli.Command{
 			Aliases: []string{"f"},
 			Usage:   "Skip confirmation prompt for destructive changes",
 		},
+		&cli.BoolFlag{
+			Name:  "show-changes",
+			Usage: "Show changes that will be applied",
+			Value: true,
+		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		dbPath := cmd.String("database")
@@ -101,6 +108,7 @@ var applyCMD = &cli.Command{
 		skipDestructive := cmd.Bool("skip-destructive")
 		backup := cmd.Bool("backup")
 		force := cmd.Bool("force")
+		showChanges := cmd.Bool("show-changes")
 
 		changes, err := diff.Compare(dbPath, schemaDir)
 		if err != nil {
@@ -136,7 +144,7 @@ var applyCMD = &cli.Command{
 			DryRun:          dryRun,
 			SkipDestructive: skipDestructive,
 			Backup:          backup,
-			ShowChanges:     true,
+			ShowChanges:     showChanges,
 		}
 
 		if err := diff.Apply(dbPath, schemaDir, opts); err != nil {
@@ -159,16 +167,15 @@ var dumpCMD = &cli.Command{
 			Required: true,
 		},
 		&cli.StringFlag{
-			Name:     "output",
-			Aliases:  []string{"o"},
-			Usage:    "Output directory for schema files",
-			Required: true,
+			Name:    "output",
+			Aliases: []string{"o"},
+			Value:   "out",
+			Usage:   "Output directory for schema files",
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		dbPath := cmd.String("database")
 		outputDir := cmd.String("output")
-
 		return dumpSchema(dbPath, outputDir)
 	},
 }
@@ -185,7 +192,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write tables
 	if len(s.Tables) > 0 {
-		f, err := os.Create(filepath.Join(outputDir, "tables.sql"))
+		tablesDir := filepath.Clean(filepath.Join(outputDir, "tables"))
+		f, err := os.Create(tablesDir)
 		if err != nil {
 			return err
 		}
@@ -193,7 +201,7 @@ func dumpSchema(dbPath, outputDir string) error {
 			_ = f.Close()
 		}()
 
-		for _, name := range diff.SortedKeys(s.Tables) {
+		for _, name := range slices.Sorted(maps.Keys(s.Tables)) {
 			table := s.Tables[name]
 			if _, err := fmt.Fprintf(f, "%s;\n\n", table.SQL); err != nil {
 				return err
@@ -203,7 +211,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write indexes
 	if len(s.Indexes) > 0 {
-		f, err := os.Create(filepath.Join(outputDir, "indexes.sql"))
+		indexesDir := filepath.Clean(filepath.Join(outputDir, "indexes"))
+		f, err := os.Create(indexesDir)
 		if err != nil {
 			return err
 		}
@@ -211,7 +220,7 @@ func dumpSchema(dbPath, outputDir string) error {
 			_ = f.Close()
 		}()
 
-		for _, name := range diff.SortedKeys(s.Indexes) {
+		for _, name := range slices.Sorted(maps.Keys(s.Indexes)) {
 			index := s.Indexes[name]
 			if _, err := fmt.Fprintf(f, "%s;\n\n", index.SQL); err != nil {
 				return err
@@ -221,7 +230,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write views
 	if len(s.Views) > 0 {
-		f, err := os.Create(filepath.Join(outputDir, "views.sql"))
+		viewsDir := filepath.Clean(filepath.Join(outputDir, "views"))
+		f, err := os.Create(viewsDir)
 		if err != nil {
 			return err
 		}
@@ -229,7 +239,7 @@ func dumpSchema(dbPath, outputDir string) error {
 			_ = f.Close()
 		}()
 
-		for _, name := range diff.SortedKeys(s.Views) {
+		for _, name := range slices.Sorted(maps.Keys(s.Views)) {
 			view := s.Views[name]
 			if _, err := fmt.Fprintf(f, "%s;\n\n", view.SQL); err != nil {
 				return err
@@ -239,7 +249,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write triggers
 	if len(s.Triggers) > 0 {
-		f, err := os.Create(filepath.Join(outputDir, "triggers.sql"))
+		triggerDir := filepath.Clean(filepath.Join(outputDir, "triggers"))
+		f, err := os.Create(triggerDir)
 		if err != nil {
 			return err
 		}
@@ -247,7 +258,7 @@ func dumpSchema(dbPath, outputDir string) error {
 			_ = f.Close()
 		}()
 
-		for _, name := range diff.SortedKeys(s.Triggers) {
+		for _, name := range slices.Sorted(maps.Keys(s.Triggers)) {
 			trigger := s.Triggers[name]
 			if _, err := fmt.Fprintf(f, "%s;\n\n", trigger.SQL); err != nil {
 				return err

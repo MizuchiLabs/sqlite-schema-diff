@@ -62,7 +62,7 @@ func FromDirectory(dir string) (*schema.Database, error) {
 
 	var allSQL strings.Builder
 	for _, path := range files {
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
