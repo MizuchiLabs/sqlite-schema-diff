@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+
+      - name: Install Task
+        uses: go-task/setup-task@v1
+
+      - name: Run tests
+        run: task lint
+
+      - name: Run GolangCI-Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=10m
+
+      - name: Run security checks
+        uses: securego/gosec@master
+        with:
+          args: -exclude-generated ./...
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.0.0
+
+      - name: Install Syft
+        uses: anchore/sbom-action@v0
+        with:
+          upload-release-assets: false
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean --skip=validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_YES: "true"
