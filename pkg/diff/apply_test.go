@@ -34,7 +34,9 @@ func TestApply_DryRun(t *testing.T) {
 
 	// Verify no changes were made
 	db, _ := sql.Open("sqlite", dbPath)
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users')").Scan(&count); err != nil {
@@ -59,7 +61,9 @@ func TestApply_AddColumn(t *testing.T) {
 	}
 
 	db, _ := sql.Open("sqlite", dbPath)
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	var colName string
 	err = db.QueryRow("SELECT name FROM pragma_table_info('users') WHERE name = 'name'").
@@ -83,7 +87,9 @@ func TestApply_SkipDestructive(t *testing.T) {
 
 	// posts table should still exist
 	db, _ := sql.Open("sqlite", dbPath)
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	var name string
 	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'").

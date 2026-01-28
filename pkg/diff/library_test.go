@@ -116,7 +116,7 @@ func TestShowChanges(t *testing.T) {
 
 	ShowChanges(changes)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer
@@ -143,7 +143,7 @@ func TestShowChanges_Empty(t *testing.T) {
 
 	ShowChanges([]Change{})
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer

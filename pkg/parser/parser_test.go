@@ -181,7 +181,7 @@ func TestFromDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sqlDB.Close()
+	_ = sqlDB.Close()
 
 	// Test FromDatabase
 	dbFromFile, err := FromDatabase(dbPath)
