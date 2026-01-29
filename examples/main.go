@@ -8,7 +8,7 @@ import (
 	"log"
 	"os"
 
-	"sqlite-schema-diff/pkg/diff"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 )
 
 const (
