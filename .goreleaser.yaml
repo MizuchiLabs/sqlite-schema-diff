@@ -13,7 +13,6 @@ before:
 
 builds:
   - binary: sqlite-schema-diff
-    dir: cmd
     env: [CGO_ENABLED=0]
     ldflags:
       - -s -w

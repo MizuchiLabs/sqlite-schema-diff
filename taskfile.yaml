@@ -10,7 +10,7 @@ tasks:
   diff:
     desc: Run diff
     cmds:
-      - go run cmd/main.go diff --db ./examples/test.db -s ./examples/schema/
+      - go run . diff --db ./examples/example.db -s ./examples/schema/
 
   # 󰚰 Update deps
   update:
@@ -36,7 +36,7 @@ tasks:
   build:
     desc: Build binary
     cmds:
-      - go build -ldflags "{{.LD_FLAGS}}" -o sqlite-schema-diff ./cmd/
+      - go build -ldflags "{{.LD_FLAGS}}" -o sqlite-schema-diff
 
   snapshot:
     desc: Test snapshot
