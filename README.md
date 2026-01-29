@@ -26,7 +26,7 @@ No more numbered migration files. No more merge conflicts. Just SQL.
 ## Installation
 
 ```bash
-go install github.com/mizuchilabs/sqlite-schema-diff/cmd@latest
+go install github.com/mizuchilabs/sqlite-schema-diff@latest
 ```
 
 Or build from source:
