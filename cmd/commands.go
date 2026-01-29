@@ -8,9 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"sqlite-schema-diff/pkg/diff"
-	"sqlite-schema-diff/pkg/parser"
-
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 	"github.com/urfave/cli/v3"
 )
 

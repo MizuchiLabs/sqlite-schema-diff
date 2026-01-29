@@ -3,7 +3,7 @@ package diff
 import (
 	"testing"
 
-	"sqlite-schema-diff/pkg/schema"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 )
 
 func TestDiff(t *testing.T) {

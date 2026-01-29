@@ -1,4 +1,4 @@
-module sqlite-schema-diff
+module github.com/mizuchilabs/sqlite-schema-diff
 
 go 1.25.5
 

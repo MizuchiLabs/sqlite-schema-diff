@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"sqlite-schema-diff/pkg/schema"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 )
 
 // ChangeType represents the type of schema change

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"sqlite-schema-diff/pkg/parser"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 )
 
 // Compare compares a database against a schema directory and returns changes

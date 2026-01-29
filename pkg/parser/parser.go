@@ -9,9 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 	_ "modernc.org/sqlite"
-
-	"sqlite-schema-diff/pkg/schema"
 )
 
 // FromDatabase extracts the schema from an existing SQLite database
