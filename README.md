@@ -1,3 +1,11 @@
+<p align="center">
+<img src="./.github/logo.svg" width="80">
+<br><br>
+<img alt="GitHub Tag" src="https://img.shields.io/github/v/tag/MizuchiLabs/sqlite-schema-diff?label=Version">
+<img alt="GitHub License" src="https://img.shields.io/github/license/MizuchiLabs/sqlite-schema-diff">
+<img alt="GitHub Issues or Pull Requests" src="https://img.shields.io/github/issues/MizuchiLabs/sqlite-schema-diff">
+</p>
+
 # sqlite-schema-diff
 
 A schema-first approach to SQLite migrations. Define your schema in `.sql` files, and let the tool figure out what changed.
