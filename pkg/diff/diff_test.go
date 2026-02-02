@@ -696,43 +696,6 @@ func TestRecreatedTableCascades(t *testing.T) {
 	}
 }
 
-func TestNormalizeSQL(t *testing.T) {
-	tests := []struct {
-		a, b string
-		want bool // true if they should be equal after normalization
-	}{
-		{
-			a:    "CREATE TABLE users (id INTEGER)",
-			b:    "CREATE TABLE users ( id INTEGER )",
-			want: true,
-		},
-		{
-			a:    `CREATE TABLE "users" (id INTEGER)`,
-			b:    "CREATE TABLE users (id INTEGER)",
-			want: true,
-		},
-		{
-			a:    "CREATE TABLE users (id INTEGER, name TEXT)",
-			b:    "CREATE TABLE users (id INTEGER,name TEXT)",
-			want: true,
-		},
-		{
-			a:    "CREATE TABLE users (id INTEGER)",
-			b:    "CREATE TABLE users (id TEXT)",
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.a+" vs "+tt.b, func(t *testing.T) {
-			got := normalizeSQL(tt.a, true) == normalizeSQL(tt.b, true)
-			if got != tt.want {
-				t.Errorf("normalizeSQL equality = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestGenerateAddColumnSQL(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -796,6 +759,112 @@ func TestSortChanges(t *testing.T) {
 		if changes[i].Type != ct {
 			t.Errorf("after sort: changes[%d].Type = %v, want %v", i, changes[i].Type, ct)
 		}
+	}
+}
+
+func TestColumnChanged(t *testing.T) {
+	tests := []struct {
+		name string
+		from schema.Column
+		to   schema.Column
+		want bool
+	}{
+		{
+			name: "identical columns",
+			from: schema.Column{Name: "id", Type: "INTEGER", NotNull: true, PrimaryKey: 1},
+			to:   schema.Column{Name: "id", Type: "INTEGER", NotNull: true, PrimaryKey: 1},
+			want: false,
+		},
+		{
+			name: "type change",
+			from: schema.Column{Name: "age", Type: "INTEGER"},
+			to:   schema.Column{Name: "age", Type: "TEXT"},
+			want: true,
+		},
+		{
+			name: "type case insensitive",
+			from: schema.Column{Name: "age", Type: "INTEGER"},
+			to:   schema.Column{Name: "age", Type: "integer"},
+			want: false,
+		},
+		{
+			name: "not null change",
+			from: schema.Column{Name: "email", Type: "TEXT", NotNull: true},
+			to:   schema.Column{Name: "email", Type: "TEXT", NotNull: false},
+			want: true,
+		},
+		{
+			name: "pk change",
+			from: schema.Column{Name: "id", Type: "INTEGER", PrimaryKey: 0},
+			to:   schema.Column{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			want: true,
+		},
+		{
+			name: "default added",
+			from: schema.Column{Name: "flag", Type: "INTEGER"},
+			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
+			want: true,
+		},
+		{
+			name: "default removed",
+			from: schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
+			to:   schema.Column{Name: "flag", Type: "INTEGER"},
+			want: true,
+		},
+		{
+			name: "default changed",
+			from: schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
+			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("1")},
+			want: true,
+		},
+		{
+			name: "default whitespace normalized",
+			from: schema.Column{Name: "flag", Type: "TEXT", Default: ptr("'foo'")},
+			to:   schema.Column{Name: "flag", Type: "TEXT", Default: ptr(" 'foo' ")},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := columnChanged(tt.from, tt.to)
+			if got != tt.want {
+				t.Errorf("columnChanged() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultForType(t *testing.T) {
+	tests := []struct {
+		colType string
+		want    string
+	}{
+		{"INTEGER", "0"},
+		{"INT", "0"},
+		{"BIGINT", "0"},
+		{"SMALLINT", "0"},
+		{"TINYINT", "0"},
+		{"REAL", "0.0"},
+		{"FLOAT", "0.0"},
+		{"DOUBLE", "0.0"},
+		{"BLOB", "X''"},
+		{"TEXT", "''"},
+		{"VARCHAR", "''"},
+		{
+			"BOOLEAN",
+			"''",
+		}, // SQLite doesn't have native BOOLEAN, usually maps to NUMERIC/INTEGER, but strict string matching returns ''
+		{"UNKNOWN", "''"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.colType, func(t *testing.T) {
+			got := defaultForType(tt.colType)
+			if got != tt.want {
+				t.Errorf("defaultForType(%q) = %q, want %q", tt.colType, got, tt.want)
+			}
+		})
 	}
 }
 

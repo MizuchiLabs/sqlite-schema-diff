@@ -283,6 +283,37 @@ func TestFromDirectory_InvalidSQL(t *testing.T) {
 	}
 }
 
+func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Valid SQL file
+	if err := os.WriteFile(filepath.Join(tmpDir, "01_valid.sql"), []byte(`CREATE TABLE t1(id INT);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-SQL file that should be ignored
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte(`This should be ignored`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hidden file (dotfile) - should be ignored based on .sql suffix check, but just in case
+	if err := os.WriteFile(filepath.Join(tmpDir, ".config"), []byte(`ignored`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := FromDirectory(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(db.Tables) != 1 {
+		t.Errorf("expected 1 table, got %d", len(db.Tables))
+	}
+	if _, ok := db.Tables["t1"]; !ok {
+		t.Error("expected table t1 to exist")
+	}
+}
+
 // Helpers
 
 func keys[K comparable, V any](m map[K]V) []string {

@@ -484,32 +484,6 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 	return changes
 }
 
-func normalizeSQL(sql string, stripQuotes bool) string {
-	sql = strings.TrimSpace(sql)
-	sql = strings.TrimSuffix(sql, ";")
-	if stripQuotes {
-		// Remove quotes around identifiers (SQLite accepts both quoted and unquoted)
-		sql = strings.ReplaceAll(sql, "\"", "")
-		sql = strings.ReplaceAll(sql, "`", "")
-		sql = strings.ReplaceAll(sql, "[", "")
-		sql = strings.ReplaceAll(sql, "]", "")
-	}
-	// Collapse all whitespace to single spaces
-	sql = strings.ToLower(strings.Join(strings.Fields(sql), " "))
-	// Normalize spacing around punctuation
-	for _, ch := range []string{"(", ")", ",", "="} {
-		sql = strings.ReplaceAll(sql, " "+ch, ch)
-		sql = strings.ReplaceAll(sql, ch+" ", ch)
-	}
-	// Add space after comma for consistency
-	sql = strings.ReplaceAll(sql, ",", ", ")
-	// Collapse any double spaces created
-	for strings.Contains(sql, "  ") {
-		sql = strings.ReplaceAll(sql, "  ", " ")
-	}
-	return sql
-}
-
 func ensureSemicolon(sql string) string {
 	sql = strings.TrimSpace(sql)
 	if !strings.HasSuffix(sql, ";") {

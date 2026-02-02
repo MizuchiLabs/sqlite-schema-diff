@@ -51,17 +51,28 @@ func FromDirectory(dir string) (*schema.Database, error) {
 
 	slices.Sort(files)
 
-	var allSQL strings.Builder
+	// Create the in-memory database once
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("create in-memory database: %w", err)
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	// Execute each file individually
 	for _, path := range files {
 		content, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		allSQL.Write(content)
-		allSQL.WriteString("\n")
+
+		if _, err := db.Exec(string(content)); err != nil {
+			return nil, fmt.Errorf("execute %s: %w", filepath.Base(path), err)
+		}
 	}
 
-	return FromSQL(allSQL.String())
+	return extractSchema(db)
 }
 
 // extractSchema extracts the complete schema from a database connection
