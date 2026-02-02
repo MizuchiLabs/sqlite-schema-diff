@@ -90,38 +90,61 @@ sqlite-schema-diff dump --database app.db --output ./schema
 ## Library Usage
 
 ```go
-import "github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
+import (
+    "database/sql"
+    "log"
 
-// Compare and get changes
-changes, err := diff.Compare("app.db", "./schema")
-if err != nil {
-    log.Fatal(err)
+    "github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
+    _ "modernc.org/sqlite"
+)
+
+func main() {
+    // Open your database connection
+    db, err := sql.Open("sqlite", "app.db")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
+
+    // Compare and get changes
+    changes, err := diff.Compare(db, "./schema")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Check what's changing
+    for _, c := range changes {
+        fmt.Printf("%s: %s (destructive: %v)\n", c.Type, c.Description, c.Destructive)
+    }
+
+    // Generate SQL without applying
+    sql := diff.GenerateSQL(changes)
+
+    // Apply changes
+    err = diff.Apply(db, "./schema", diff.ApplyOptions{
+        BackupPath:      "app.db.backup", // empty string = no backup
+        SkipDestructive: false,
+    })
 }
-
-// Check what's changing
-for _, c := range changes {
-    fmt.Printf("%s: %s (destructive: %v)\n", c.Type, c.Description, c.Destructive)
-}
-
-// Generate SQL without applying
-sql := diff.GenerateSQL(changes)
-
-// Apply changes
-err = diff.Apply("app.db", "./schema", diff.ApplyOptions{
-    Backup:          true,
-    SkipDestructive: false,
-})
 ```
 
 ### Available Functions
 
 | Function                         | Description                     |
 | -------------------------------- | ------------------------------- |
-| `Compare(dbPath, schemaDir)`     | Diff database against SQL files |
+| `Compare(db, schemaDir)`         | Diff database against SQL files |
 | `CompareDatabases(fromDB, toDB)` | Diff two databases              |
 | `GenerateSQL(changes)`           | Generate migration SQL          |
 | `HasDestructive(changes)`        | Check for destructive changes   |
-| `Apply(dbPath, schemaDir, opts)` | Apply changes to database       |
+| `Apply(db, schemaDir, opts)`     | Apply changes to database       |
+
+### Parser Functions
+
+| Function                    | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `parser.FromDB(db)`         | Extract schema from open database        |
+| `parser.FromSQL(sql)`       | Parse schema from SQL string             |
+| `parser.FromDirectory(dir)` | Load schema from directory of .sql files |
 
 ## Supported Objects
 
