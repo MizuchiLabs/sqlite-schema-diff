@@ -41,8 +41,9 @@ func Apply(db *sql.DB, schemaDir string, opts ApplyOptions) error {
 
 	// Create backup if path provided
 	if opts.BackupPath != "" {
-		_ = os.Remove(opts.BackupPath) // Ignore error if doesn't exist
-		if _, err := db.Exec(fmt.Sprintf("VACUUM INTO '%s'", opts.BackupPath)); err != nil {
+		_ = os.Remove(opts.BackupPath)                             // Ignore error if doesn't exist
+		safePath := strings.ReplaceAll(opts.BackupPath, "'", "''") // Escape single quotes for SQL
+		if _, err := db.Exec(fmt.Sprintf("VACUUM INTO '%s'", safePath)); err != nil {
 			return fmt.Errorf("create backup: %w", err)
 		}
 	}
@@ -74,6 +75,17 @@ func Apply(db *sql.DB, schemaDir string, opts ApplyOptions) error {
 
 	if _, err := tx.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
+	}
+
+	// Check for FK violations before committing
+	rows, err := tx.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	hasViolations := rows.Next()
+	_ = rows.Close()
+	if hasViolations {
+		return fmt.Errorf("migration would create foreign key violations")
 	}
 
 	if err := tx.Commit(); err != nil {

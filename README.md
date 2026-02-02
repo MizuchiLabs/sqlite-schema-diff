@@ -73,13 +73,12 @@ sqlite-schema-diff diff --database app.db --schema ./schema --sql  # Output raw 
 sqlite-schema-diff apply --database app.db --schema ./schema
 ```
 
-| Flag                  | Description                               |
-| --------------------- | ----------------------------------------- |
-| `--dry-run`           | Show what would happen without applying   |
-| `--force`             | Skip confirmation for destructive changes |
-| `--skip-destructive`  | Skip DROP operations                      |
-| `--backup=false`      | Disable automatic backup                  |
-| `--show-changes=true` | Show changes before applying              |
+| Flag                 | Description                               |
+| -------------------- | ----------------------------------------- |
+| `--dry-run`          | Show what would happen without applying   |
+| `--force`            | Skip confirmation for destructive changes |
+| `--skip-destructive` | Skip DROP operations                      |
+| `--backup=false`     | Disable automatic backup                  |
 
 ### `dump` — Export existing schema
 

@@ -108,6 +108,60 @@ func TestDiff(t *testing.T) {
 			wantChangeTypes: []ChangeType{RecreateTable},
 			wantDestructive: true,
 		},
+		{
+			name: "add column at end uses ADD COLUMN",
+			from: &schema.Database{Tables: map[string]*schema.Table{
+				"posts": {
+					Name: "posts",
+					SQL:  "CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)",
+					Columns: []schema.Column{
+						{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+						{Name: "title", Type: "TEXT"},
+					},
+				},
+			}},
+			to: &schema.Database{Tables: map[string]*schema.Table{
+				"posts": {
+					Name: "posts",
+					SQL:  "CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, published BOOLEAN)",
+					Columns: []schema.Column{
+						{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+						{Name: "title", Type: "TEXT"},
+						{Name: "published", Type: "BOOLEAN"},
+					},
+				},
+			}},
+			wantChangeTypes: []ChangeType{AddColumn},
+			wantDestructive: false,
+		},
+		{
+			name: "add column in middle triggers recreate",
+			from: &schema.Database{Tables: map[string]*schema.Table{
+				"posts": {
+					Name: "posts",
+					SQL:  "CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, published BOOLEAN)",
+					Columns: []schema.Column{
+						{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+						{Name: "title", Type: "TEXT"},
+						{Name: "published", Type: "BOOLEAN"},
+					},
+				},
+			}},
+			to: &schema.Database{Tables: map[string]*schema.Table{
+				"posts": {
+					Name: "posts",
+					SQL:  "CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, content TEXT, published BOOLEAN)",
+					Columns: []schema.Column{
+						{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+						{Name: "title", Type: "TEXT"},
+						{Name: "content", Type: "TEXT"},
+						{Name: "published", Type: "BOOLEAN"},
+					},
+				},
+			}},
+			wantChangeTypes: []ChangeType{RecreateTable},
+			wantDestructive: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -642,7 +696,7 @@ func TestRecreatedTableCascades(t *testing.T) {
 	}
 }
 
-func TestNormalizeTableSQL(t *testing.T) {
+func TestNormalizeSQL(t *testing.T) {
 	tests := []struct {
 		a, b string
 		want bool // true if they should be equal after normalization
@@ -671,9 +725,9 @@ func TestNormalizeTableSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.a+" vs "+tt.b, func(t *testing.T) {
-			got := normalizeTableSQL(tt.a) == normalizeTableSQL(tt.b)
+			got := normalizeSQL(tt.a, true) == normalizeSQL(tt.b, true)
 			if got != tt.want {
-				t.Errorf("normalizeTableSQL equality = %v, want %v", got, tt.want)
+				t.Errorf("normalizeSQL equality = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -704,7 +758,13 @@ func TestGenerateAddColumnSQL(t *testing.T) {
 			wantSQL: `ALTER TABLE "users" ADD COLUMN "active" INTEGER NOT NULL DEFAULT 1;`,
 		},
 		{
-			name:      "not null without default gets empty string",
+			name:      "not null integer without default gets zero",
+			tableName: "users",
+			col:       schema.Column{Name: "count", Type: "INTEGER", NotNull: true},
+			wantSQL:   `ALTER TABLE "users" ADD COLUMN "count" INTEGER DEFAULT 0;`,
+		},
+		{
+			name:      "not null text without default gets empty string",
 			tableName: "users",
 			col:       schema.Column{Name: "status", Type: "TEXT", NotNull: true},
 			wantSQL:   `ALTER TABLE "users" ADD COLUMN "status" TEXT DEFAULT '';`,
@@ -758,17 +818,4 @@ func initMaps(db *schema.Database) {
 
 func ptr(s string) *string {
 	return &s
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

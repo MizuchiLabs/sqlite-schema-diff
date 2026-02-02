@@ -121,6 +121,12 @@ func diffTableColumns(from, to *schema.Table) []Change {
 		}
 	}
 
+	// If new columns are not at the end of the target schema,
+	// we need RECREATE_TABLE to preserve column order
+	if len(newCols) > 0 && !newColumnsAtEnd(from, to) {
+		return []Change{recreateTableChange(from.Name, from, to)}
+	}
+
 	// Check for modified columns (requires table recreation)
 	for _, toCol := range to.Columns {
 		fromCol := from.GetColumn(toCol.Name)
@@ -136,7 +142,8 @@ func diffTableColumns(from, to *schema.Table) []Change {
 
 	// If we're only adding columns, check if the table SQL has other changes
 	// (e.g., UNIQUE, CHECK, FOREIGN KEY constraints that PRAGMA table_info doesn't expose)
-	if len(newCols) == 0 && tableDefinitionChanged(from, to) {
+	definitionChanged := normalizeSQL(from.SQL, true) != normalizeSQL(to.SQL, true)
+	if len(newCols) == 0 && definitionChanged {
 		return []Change{recreateTableChange(from.Name, from, to)}
 	}
 
@@ -152,37 +159,6 @@ func diffTableColumns(from, to *schema.Table) []Change {
 	}
 
 	return changes
-}
-
-// tableDefinitionChanged compares the normalized CREATE TABLE statements
-// to detect changes that PRAGMA table_info doesn't capture (UNIQUE, CHECK, FK, etc.)
-func tableDefinitionChanged(from, to *schema.Table) bool {
-	return normalizeTableSQL(from.SQL) != normalizeTableSQL(to.SQL)
-}
-
-// normalizeTableSQL normalizes a CREATE TABLE statement for comparison
-func normalizeTableSQL(sql string) string {
-	sql = strings.TrimSpace(sql)
-	sql = strings.TrimSuffix(sql, ";")
-	// Remove quotes around identifiers (SQLite accepts both quoted and unquoted)
-	sql = strings.ReplaceAll(sql, "\"", "")
-	sql = strings.ReplaceAll(sql, "`", "")
-	sql = strings.ReplaceAll(sql, "[", "")
-	sql = strings.ReplaceAll(sql, "]", "")
-	// Collapse all whitespace to single spaces
-	sql = strings.ToLower(strings.Join(strings.Fields(sql), " "))
-	// Normalize spacing around punctuation
-	for _, ch := range []string{"(", ")", ",", "="} {
-		sql = strings.ReplaceAll(sql, " "+ch, ch)
-		sql = strings.ReplaceAll(sql, ch+" ", ch)
-	}
-	// Add space after comma for consistency
-	sql = strings.ReplaceAll(sql, ",", ", ")
-	// Collapse any double spaces created
-	for strings.Contains(sql, "  ") {
-		sql = strings.ReplaceAll(sql, "  ", " ")
-	}
-	return sql
 }
 
 func columnChanged(from, to schema.Column) bool {
@@ -217,6 +193,22 @@ func columnChanged(from, to schema.Column) bool {
 	return false
 }
 
+// newColumnsAtEnd checks if all new columns appear at the end of the target schema.
+// This is important because ALTER TABLE ADD COLUMN always appends to the end.
+// If new columns should be in the middle, we need RECREATE_TABLE to preserve order.
+func newColumnsAtEnd(from, to *schema.Table) bool {
+	seenNew := false
+	for _, col := range to.Columns {
+		isNew := !from.HasColumn(col.Name)
+		if isNew {
+			seenNew = true
+		} else if seenNew {
+			return false
+		}
+	}
+	return true
+}
+
 func generateAddColumnSQL(tableName string, col schema.Column) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "ALTER TABLE %q ADD COLUMN %q", tableName, col.Name)
@@ -230,7 +222,9 @@ func generateAddColumnSQL(tableName string, col schema.Column) string {
 			fmt.Fprintf(&sb, " NOT NULL DEFAULT %s", *col.Default)
 		} else {
 			// SQLite requires DEFAULT for NOT NULL in ADD COLUMN
-			sb.WriteString(" DEFAULT ''")
+			// Use type-appropriate default
+			sb.WriteString(" DEFAULT ")
+			sb.WriteString(defaultForType(col.Type))
 		}
 	} else if col.Default != nil {
 		fmt.Fprintf(&sb, " DEFAULT %s", *col.Default)
@@ -238,6 +232,20 @@ func generateAddColumnSQL(tableName string, col schema.Column) string {
 
 	sb.WriteString(";")
 	return sb.String()
+}
+
+// defaultForType returns a sensible default value for a SQLite type
+func defaultForType(colType string) string {
+	switch strings.ToUpper(colType) {
+	case "INTEGER", "INT", "BIGINT", "SMALLINT", "TINYINT":
+		return "0"
+	case "REAL", "FLOAT", "DOUBLE":
+		return "0.0"
+	case "BLOB":
+		return "X''"
+	default:
+		return "''"
+	}
 }
 
 func recreateTableChange(name string, from, to *schema.Table) Change {
@@ -287,7 +295,8 @@ func commonColumns(from, to *schema.Table) []string {
 	var common []string
 	for _, c := range to.Columns {
 		if fromCols[c.Name] {
-			common = append(common, c.Name)
+			// Quote column names to handle reserved words and special chars
+			common = append(common, fmt.Sprintf("%q", c.Name))
 		}
 	}
 	return common
@@ -344,7 +353,7 @@ func diffIndexes(from, to *schema.Database, recreatedTables map[string]bool) []C
 				SQL:         []string{ensureSemicolon(toIdx.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromIdx.SQL) != normalizeSQL(toIdx.SQL) {
+		} else if normalizeSQL(fromIdx.SQL, false) != normalizeSQL(toIdx.SQL, false) {
 			// Index changed - drop and recreate
 			changes = append(changes, Change{
 				Type:        DropIndex,
@@ -391,7 +400,7 @@ func diffViews(from, to *schema.Database) []Change {
 				SQL:         []string{ensureSemicolon(toView.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromView.SQL) != normalizeSQL(toView.SQL) {
+		} else if normalizeSQL(fromView.SQL, false) != normalizeSQL(toView.SQL, false) {
 			changes = append(changes, Change{
 				Type:        DropView,
 				Object:      name,
@@ -454,7 +463,7 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 				SQL:         []string{ensureSemicolon(toTrig.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromTrig.SQL) != normalizeSQL(toTrig.SQL) {
+		} else if normalizeSQL(fromTrig.SQL, false) != normalizeSQL(toTrig.SQL, false) {
 			changes = append(changes, Change{
 				Type:        DropTrigger,
 				Object:      name,
@@ -475,9 +484,16 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 	return changes
 }
 
-func normalizeSQL(sql string) string {
+func normalizeSQL(sql string, stripQuotes bool) string {
 	sql = strings.TrimSpace(sql)
 	sql = strings.TrimSuffix(sql, ";")
+	if stripQuotes {
+		// Remove quotes around identifiers (SQLite accepts both quoted and unquoted)
+		sql = strings.ReplaceAll(sql, "\"", "")
+		sql = strings.ReplaceAll(sql, "`", "")
+		sql = strings.ReplaceAll(sql, "[", "")
+		sql = strings.ReplaceAll(sql, "]", "")
+	}
 	// Collapse all whitespace to single spaces
 	sql = strings.ToLower(strings.Join(strings.Fields(sql), " "))
 	// Normalize spacing around punctuation

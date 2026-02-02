@@ -3,6 +3,7 @@ package diff
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -104,7 +105,7 @@ func TestGenerateSQL(t *testing.T) {
 	}
 
 	for _, check := range checks {
-		if !contains(sql, check) {
+		if !strings.Contains(sql, check) {
 			t.Errorf("GenerateSQL() missing %q", check)
 		}
 	}
