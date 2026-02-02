@@ -13,16 +13,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// FromDatabase extracts the schema from an existing SQLite database
-func FromDatabase(dbPath string) (*schema.Database, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	defer func() {
-		_ = db.Close()
-	}()
-
+// FromDB extracts the schema from an open database connection
+func FromDB(db *sql.DB) (*schema.Database, error) {
 	return extractSchema(db)
 }
 
@@ -70,6 +62,26 @@ func FromDirectory(dir string) (*schema.Database, error) {
 	}
 
 	return FromSQL(allSQL.String())
+}
+
+// extractSchema extracts the complete schema from a database connection
+func extractSchema(db *sql.DB) (*schema.Database, error) {
+	s := schema.NewDatabase()
+
+	if err := extractTables(db, s); err != nil {
+		return nil, err
+	}
+	if err := extractIndexes(db, s); err != nil {
+		return nil, err
+	}
+	if err := extractViews(db, s); err != nil {
+		return nil, err
+	}
+	if err := extractTriggers(db, s); err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
 
 func extractTables(db *sql.DB, s *schema.Database) error {
@@ -141,26 +153,6 @@ func extractTables(db *sql.DB, s *schema.Database) error {
 	}
 
 	return nil
-}
-
-// extractSchema extracts the complete schema from a database connection
-func extractSchema(db *sql.DB) (*schema.Database, error) {
-	s := schema.NewDatabase()
-
-	if err := extractTables(db, s); err != nil {
-		return nil, err
-	}
-	if err := extractIndexes(db, s); err != nil {
-		return nil, err
-	}
-	if err := extractViews(db, s); err != nil {
-		return nil, err
-	}
-	if err := extractTriggers(db, s); err != nil {
-		return nil, err
-	}
-
-	return s, nil
 }
 
 func extractIndexes(db *sql.DB, s *schema.Database) error {

@@ -5,21 +5,19 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 // ApplyOptions configures how changes are applied
 type ApplyOptions struct {
 	DryRun          bool
 	SkipDestructive bool
-	Backup          bool
+	BackupPath      string // Path to create backup (empty = no backup)
 	ShowChanges     bool
 }
 
 // Apply applies schema changes to a database
-func Apply(dbPath, schemaDir string, opts ApplyOptions) error {
-	changes, err := Compare(dbPath, schemaDir)
+func Apply(db *sql.DB, schemaDir string, opts ApplyOptions) error {
+	changes, err := Compare(db, schemaDir)
 	if err != nil {
 		return err
 	}
@@ -46,19 +44,10 @@ func Apply(dbPath, schemaDir string, opts ApplyOptions) error {
 		ShowChanges(changes)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
-	}
-	defer func() {
-		_ = db.Close()
-	}()
-
-	// Create backup if requested (remove existing backup first)
-	if opts.Backup {
-		backupPath := dbPath + ".backup"
-		_ = os.Remove(backupPath) // Ignore error if doesn't exist
-		if _, err := db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath)); err != nil {
+	// Create backup if path provided
+	if opts.BackupPath != "" {
+		_ = os.Remove(opts.BackupPath) // Ignore error if doesn't exist
+		if _, err := db.Exec(fmt.Sprintf("VACUUM INTO '%s'", opts.BackupPath)); err != nil {
 			return fmt.Errorf("create backup: %w", err)
 		}
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 	"github.com/urfave/cli/v3"
+	_ "modernc.org/sqlite"
 )
 
 var commands = []*cli.Command{diffCMD, applyCMD, dumpCMD}
@@ -41,7 +43,13 @@ var diffCMD = &cli.Command{
 		schemaDir := cmd.String("schema")
 		outputSQL := cmd.Bool("sql")
 
-		changes, err := diff.Compare(dbPath, schemaDir)
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		changes, err := diff.Compare(db, schemaDir)
 		if err != nil {
 			return err
 		}
@@ -109,7 +117,13 @@ var applyCMD = &cli.Command{
 		force := cmd.Bool("force")
 		showChanges := cmd.Bool("show-changes")
 
-		changes, err := diff.Compare(dbPath, schemaDir)
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		changes, err := diff.Compare(db, schemaDir)
 		if err != nil {
 			return err
 		}
@@ -139,14 +153,19 @@ var applyCMD = &cli.Command{
 			return nil
 		}
 
+		backupPath := ""
+		if backup {
+			backupPath = dbPath + ".backup"
+		}
+
 		opts := diff.ApplyOptions{
 			DryRun:          dryRun,
 			SkipDestructive: skipDestructive,
-			Backup:          backup,
+			BackupPath:      backupPath,
 			ShowChanges:     showChanges,
 		}
 
-		if err := diff.Apply(dbPath, schemaDir, opts); err != nil {
+		if err := diff.Apply(db, schemaDir, opts); err != nil {
 			return fmt.Errorf("apply changes: %w", err)
 		}
 
@@ -175,16 +194,23 @@ var dumpCMD = &cli.Command{
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		dbPath := cmd.String("database")
 		outputDir := cmd.String("output")
-		return dumpSchema(dbPath, outputDir)
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		return dumpSchema(db, outputDir)
 	},
 }
 
-func dumpSchema(dbPath, outputDir string) error {
+func dumpSchema(db *sql.DB, outputDir string) error {
 	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	s, err := parser.FromDatabase(dbPath)
+	s, err := parser.FromDB(db)
 	if err != nil {
 		return fmt.Errorf("extract schema: %w", err)
 	}

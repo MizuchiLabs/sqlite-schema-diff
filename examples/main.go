@@ -4,11 +4,13 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -17,24 +19,30 @@ const (
 )
 
 func main() {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
 	fmt.Println("\n=== Example 1: Generate Migration SQL ===")
-	if err := generateMigrationSQL(); err != nil {
+	if err := generateMigrationSQL(db); err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Println("\n=== Example 2: Check Destructive Changes ===")
-	if err := checkDestructiveChanges(); err != nil {
+	if err := checkDestructiveChanges(db); err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Println("=== Example 3: Apply Schema Changes ===")
-	if err := apply(); err != nil {
+	if err := apply(db); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func generateMigrationSQL() error {
-	changes, err := diff.Compare(dbPath, schemaPath)
+func generateMigrationSQL(db *sql.DB) error {
+	changes, err := diff.Compare(db, schemaPath)
 	if err != nil {
 		return err
 	}
@@ -56,8 +64,8 @@ func generateMigrationSQL() error {
 	return nil
 }
 
-func checkDestructiveChanges() error {
-	changes, err := diff.Compare(dbPath, schemaPath)
+func checkDestructiveChanges(db *sql.DB) error {
+	changes, err := diff.Compare(db, schemaPath)
 	if err != nil {
 		return err
 	}
@@ -76,16 +84,16 @@ func checkDestructiveChanges() error {
 	return nil
 }
 
-func apply() error {
+func apply(db *sql.DB) error {
 	// Apply changes with options
 	opts := diff.ApplyOptions{
 		DryRun:          false,
 		SkipDestructive: false,
-		Backup:          true,
+		BackupPath:      dbPath + ".backup",
 		ShowChanges:     true,
 	}
 
-	if err := diff.Apply(dbPath, schemaPath, opts); err != nil {
+	if err := diff.Apply(db, schemaPath, opts); err != nil {
 		return fmt.Errorf("apply changes: %w", err)
 	}
 

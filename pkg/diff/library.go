@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -8,8 +9,8 @@ import (
 )
 
 // Compare compares a database against a schema directory and returns changes
-func Compare(dbPath, schemaDir string) ([]Change, error) {
-	current, err := parser.FromDatabase(dbPath)
+func Compare(db *sql.DB, schemaDir string) ([]Change, error) {
+	current, err := parser.FromDB(db)
 	if err != nil {
 		return nil, err
 	}
@@ -23,18 +24,18 @@ func Compare(dbPath, schemaDir string) ([]Change, error) {
 }
 
 // CompareDatabases compares two databases
-func CompareDatabases(fromDB, toDB string) ([]Change, error) {
-	from, err := parser.FromDatabase(fromDB)
+func CompareDatabases(from, to *sql.DB) ([]Change, error) {
+	fromSchema, err := parser.FromDB(from)
 	if err != nil {
 		return nil, err
 	}
 
-	to, err := parser.FromDatabase(toDB)
+	toSchema, err := parser.FromDB(to)
 	if err != nil {
 		return nil, err
 	}
 
-	return Diff(from, to), nil
+	return Diff(fromSchema, toSchema), nil
 }
 
 // GenerateSQL generates a complete migration script

@@ -161,43 +161,36 @@ func TestFromSQL_ColumnDetails(t *testing.T) {
 	}
 }
 
-func TestFromDatabase(t *testing.T) {
+func TestFromDB(t *testing.T) {
 	// Create temp database file
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	// Create database with schema
-	sql := `
+	schemaSQL := `
 		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE INDEX idx_name ON users(name);
 	`
-	db, err := FromSQL(sql)
+	db, err := FromSQL(schemaSQL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Write to file using sql.Open
-	sqlDB, err := openAndExec(dbPath, sql)
+	sqlDB, err := openAndExec(dbPath, schemaSQL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
-	// Test FromDatabase
-	dbFromFile, err := FromDatabase(dbPath)
+	// Test FromDB
+	dbFromFile, err := FromDB(sqlDB)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if len(dbFromFile.Tables) != len(db.Tables) {
 		t.Errorf("table count mismatch: got %d, want %d", len(dbFromFile.Tables), len(db.Tables))
-	}
-}
-
-func TestFromDatabase_NonExistent(t *testing.T) {
-	_, err := FromDatabase("/nonexistent/path/db.sqlite")
-	if err == nil {
-		t.Error("expected error for non-existent database")
 	}
 }
 
