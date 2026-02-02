@@ -182,7 +182,8 @@ func TestApply_SkipDestructiveAllFiltered(t *testing.T) {
 	defer func() { _ = checkDB.Close() }()
 
 	var count int
-	err = checkDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&count)
+	err = checkDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").
+		Scan(&count)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,22 +199,6 @@ func TestApply_InvalidSchemaDir(t *testing.T) {
 	err := Apply(db, "/nonexistent/schema/dir", ApplyOptions{})
 	if err == nil {
 		t.Error("expected error for invalid schema dir")
-	}
-}
-
-func TestApply_ShowChanges(t *testing.T) {
-	db, _ := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-	schemaDir := createSchemaDir(
-		t,
-		"users.sql",
-		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
-	)
-
-	// ShowChanges should not cause any errors
-	err := Apply(db, schemaDir, ApplyOptions{ShowChanges: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

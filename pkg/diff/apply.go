@@ -12,7 +12,6 @@ type ApplyOptions struct {
 	DryRun          bool
 	SkipDestructive bool
 	BackupPath      string // Path to create backup (empty = no backup)
-	ShowChanges     bool
 }
 
 // Apply applies schema changes to a database
@@ -38,10 +37,6 @@ func Apply(db *sql.DB, schemaDir string, opts ApplyOptions) error {
 		if len(changes) == 0 {
 			return nil
 		}
-	}
-
-	if opts.ShowChanges {
-		ShowChanges(changes)
 	}
 
 	// Create backup if path provided

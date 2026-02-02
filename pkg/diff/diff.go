@@ -307,7 +307,7 @@ func diffIndexes(from, to *schema.Database, recreatedTables map[string]bool) []C
 	// Dropped indexes (skip if table is being recreated - index is dropped implicitly)
 	for name, idx := range from.Indexes {
 		if recreatedTables[idx.Table] {
-			continue // Index will be dropped when table is recreated
+			continue
 		}
 		if _, exists := to.Indexes[name]; !exists {
 			changes = append(changes, Change{
@@ -325,7 +325,6 @@ func diffIndexes(from, to *schema.Database, recreatedTables map[string]bool) []C
 		fromIdx, exists := from.Indexes[name]
 
 		// If the table is being recreated, we need to create the index
-		// (even if it existed before, it was dropped with the old table)
 		if recreatedTables[toIdx.Table] {
 			changes = append(changes, Change{
 				Type:        CreateIndex,
@@ -419,7 +418,7 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 	// Dropped triggers (skip if table is being recreated - trigger is dropped implicitly)
 	for name, trig := range from.Triggers {
 		if recreatedTables[trig.Table] {
-			continue // Trigger will be dropped when table is recreated
+			continue
 		}
 		if _, exists := to.Triggers[name]; !exists {
 			changes = append(changes, Change{
@@ -436,7 +435,6 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 		fromTrig, exists := from.Triggers[name]
 
 		// If the table is being recreated, we need to create the trigger
-		// (even if it existed before, it was dropped with the old table)
 		if recreatedTables[toTrig.Table] {
 			changes = append(changes, Change{
 				Type:        CreateTrigger,

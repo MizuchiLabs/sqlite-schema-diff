@@ -1,10 +1,7 @@
 package diff
 
 import (
-	"bytes"
 	"database/sql"
-	"io"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -116,60 +113,6 @@ func TestGenerateSQL(t *testing.T) {
 func TestGenerateSQLEmpty(t *testing.T) {
 	if got := GenerateSQL(nil); got != "" {
 		t.Errorf("GenerateSQL(nil) = %q, want empty", got)
-	}
-}
-
-func TestShowChanges(t *testing.T) {
-	changes := []Change{
-		{Type: "create_table", Description: "Create table posts", Destructive: false},
-		{Type: "drop_table", Description: "Drop table old_data", Destructive: true},
-	}
-
-	// Capture stdout
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	ShowChanges(changes)
-
-	_ = w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatal(err)
-	}
-	output := buf.String()
-
-	if !bytes.Contains([]byte(output), []byte("[+] create_table")) {
-		t.Error("expected non-destructive change with + symbol")
-	}
-	if !bytes.Contains([]byte(output), []byte("[-] drop_table")) {
-		t.Error("expected destructive change with - symbol")
-	}
-	if !bytes.Contains([]byte(output), []byte("Total changes: 2 (1 destructive)")) {
-		t.Error("expected summary line")
-	}
-}
-
-func TestShowChanges_Empty(t *testing.T) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	ShowChanges([]Change{})
-
-	_ = w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatal(err)
-	}
-	output := buf.String()
-
-	if !bytes.Contains([]byte(output), []byte("Total changes: 0 (0 destructive)")) {
-		t.Error("expected empty summary")
 	}
 }
 

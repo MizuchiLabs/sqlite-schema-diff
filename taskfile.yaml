@@ -1,7 +1,5 @@
 version: "3"
 
-output: prefixed
-
 env:
   CGO_ENABLED: 0
   LD_FLAGS: -s -w -X main.version={{.VERSION}}
@@ -11,6 +9,11 @@ tasks:
     desc: Run diff
     cmds:
       - go run . diff --db ./examples/example.db -s ./examples/schema/
+
+  apply:
+    desc: Run apply
+    cmds:
+      - go run . apply --db ./examples/example.db -s ./examples/schema/
 
   # 󰚰 Update deps
   update:

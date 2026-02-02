@@ -62,7 +62,7 @@ var diffCMD = &cli.Command{
 		if outputSQL {
 			fmt.Println(diff.GenerateSQL(changes))
 		} else {
-			diff.ShowChanges(changes)
+			showChanges(changes)
 		}
 		return nil
 	},
@@ -102,11 +102,6 @@ var applyCMD = &cli.Command{
 			Aliases: []string{"f"},
 			Usage:   "Skip confirmation prompt for destructive changes",
 		},
-		&cli.BoolFlag{
-			Name:  "show-changes",
-			Usage: "Show changes that will be applied",
-			Value: true,
-		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		dbPath := cmd.String("database")
@@ -115,7 +110,6 @@ var applyCMD = &cli.Command{
 		skipDestructive := cmd.Bool("skip-destructive")
 		backup := cmd.Bool("backup")
 		force := cmd.Bool("force")
-		showChanges := cmd.Bool("show-changes")
 
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
@@ -134,6 +128,7 @@ var applyCMD = &cli.Command{
 		}
 
 		fmt.Println("Schema changes to be applied:")
+		showChanges(changes)
 
 		// Confirm destructive changes
 		if diff.HasDestructive(changes) && !force && !dryRun {
@@ -162,7 +157,6 @@ var applyCMD = &cli.Command{
 			DryRun:          dryRun,
 			SkipDestructive: skipDestructive,
 			BackupPath:      backupPath,
-			ShowChanges:     showChanges,
 		}
 
 		if err := diff.Apply(db, schemaDir, opts); err != nil {
@@ -203,6 +197,24 @@ var dumpCMD = &cli.Command{
 
 		return dumpSchema(db, outputDir)
 	},
+}
+
+func showChanges(changes []diff.Change) {
+	for _, c := range changes {
+		symbol := "+"
+		if c.Destructive {
+			symbol = "-"
+		}
+		fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
+	}
+
+	destructive := 0
+	for _, c := range changes {
+		if c.Destructive {
+			destructive++
+		}
+	}
+	fmt.Printf("\nTotal changes: %d (%d destructive)\n", len(changes), destructive)
 }
 
 func dumpSchema(db *sql.DB, outputDir string) error {
