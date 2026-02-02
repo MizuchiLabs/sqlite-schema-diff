@@ -4,6 +4,7 @@ package parser
 import (
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,19 @@ import (
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 	_ "modernc.org/sqlite"
 )
+
+var baseFS fs.FS
+
+// SetBaseFS sets the base filesystem for reading schema files.
+// Use an embed.FS to read from embedded files.
+// Pass nil to revert to the OS filesystem.
+func SetBaseFS(fsys fs.FS) {
+	baseFS = fsys
+}
+
+func BaseFS() fs.FS {
+	return baseFS
+}
 
 // FromDB extracts the schema from an open database connection
 func FromDB(db *sql.DB) (*schema.Database, error) {
@@ -35,21 +49,20 @@ func FromSQL(sqlContent string) (*schema.Database, error) {
 	return extractSchema(db)
 }
 
-// FromDirectory loads all .sql files from a directory by applying them to an in-memory database
-func FromDirectory(dir string) (*schema.Database, error) {
+func ReadFiles(dir string) (*schema.Database, error) {
+	var err error
 	var files []string
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
-			return err
+	if baseFS != nil {
+		files, err = fromFS(baseFS, dir)
+		if err != nil {
+			return nil, err
 		}
-		files = append(files, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	} else {
+		files, err = fromDir(dir)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	slices.Sort(files)
 
 	// Create the in-memory database once
 	db, err := sql.Open("sqlite", ":memory:")
@@ -71,8 +84,43 @@ func FromDirectory(dir string) (*schema.Database, error) {
 			return nil, fmt.Errorf("execute %s: %w", filepath.Base(path), err)
 		}
 	}
-
 	return extractSchema(db)
+}
+
+// fromDir loads all .sql files from a directory
+func fromDir(dir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
+			return err
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slices.Sort(files)
+	return files, nil
+}
+
+// fromFS loads all .sql files from an fs.FS
+func fromFS(fsys fs.FS, dir string) ([]string, error) {
+	var files []string
+	err := fs.WalkDir(fsys, dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
+			return err
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slices.Sort(files)
+	return files, nil
 }
 
 // extractSchema extracts the complete schema from a database connection

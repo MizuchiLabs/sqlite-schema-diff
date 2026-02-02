@@ -8,14 +8,15 @@ import (
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 )
 
-// Compare compares a database against a schema directory and returns changes
+// Compare compares a database against a schema directory and returns changes.
+// If SetBaseFS was called, reads from the embedded filesystem instead.
 func Compare(db *sql.DB, schemaDir string) ([]Change, error) {
 	current, err := parser.FromDB(db)
 	if err != nil {
 		return nil, err
 	}
 
-	target, err := parser.FromDirectory(schemaDir)
+	target, err := parser.ReadFiles(schemaDir)
 	if err != nil {
 		return nil, err
 	}

@@ -210,7 +210,7 @@ func TestFromDirectory(t *testing.T) {
 		}
 	}
 
-	db, err := FromDirectory(tmpDir)
+	db, err := ReadFiles(tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := FromDirectory(tmpDir)
+	db, err := ReadFiles(tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 func TestFromDirectory_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	db, err := FromDirectory(tmpDir)
+	db, err := ReadFiles(tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestFromDirectory_Empty(t *testing.T) {
 }
 
 func TestFromDirectory_NonExistent(t *testing.T) {
-	_, err := FromDirectory("/nonexistent/path")
+	_, err := ReadFiles("/nonexistent/path")
 	if err == nil {
 		t.Error("expected error for non-existent directory")
 	}
@@ -277,7 +277,7 @@ func TestFromDirectory_InvalidSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := FromDirectory(tmpDir)
+	_, err := ReadFiles(tmpDir)
 	if err == nil {
 		t.Error("expected error for invalid SQL")
 	}
@@ -301,7 +301,7 @@ func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := FromDirectory(tmpDir)
+	db, err := ReadFiles(tmpDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
