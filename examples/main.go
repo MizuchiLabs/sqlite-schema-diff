@@ -1,42 +1,49 @@
-//go:build examples
-// +build examples
-
 package main
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 	_ "modernc.org/sqlite"
 )
 
 const (
 	dbPath     = "example.db"
-	schemaPath = "./schema"
+	schemaPath = "schema"
 )
+
+//go:embed schema/*.sql
+var schemaFS embed.FS
 
 func main() {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	fmt.Println("\n=== Example 1: Generate Migration SQL ===")
+	fmt.Println("=== Example 1: Generate Migration SQL ===")
 	if err := generateMigrationSQL(db); err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Println("\n=== Example 2: Check Destructive Changes ===")
+	fmt.Println("=== Example 2: Check Destructive Changes ===")
 	if err := checkDestructiveChanges(db); err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Println("=== Example 3: Apply Schema Changes ===")
 	if err := apply(db); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("=== Example 3: Apply Embedded Changes ===")
+	if err := applyEmbedded(db); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -90,7 +97,24 @@ func apply(db *sql.DB) error {
 		DryRun:          false,
 		SkipDestructive: false,
 		BackupPath:      dbPath + ".backup",
-		ShowChanges:     true,
+	}
+
+	if err := diff.Apply(db, schemaPath, opts); err != nil {
+		return fmt.Errorf("apply changes: %w", err)
+	}
+
+	fmt.Println("Schema updated successfully!")
+	return nil
+}
+
+func applyEmbedded(db *sql.DB) error {
+	parser.SetBaseFS(schemaFS)
+
+	// Apply changes with options
+	opts := diff.ApplyOptions{
+		DryRun:          false,
+		SkipDestructive: false,
+		BackupPath:      dbPath + ".backup",
 	}
 
 	if err := diff.Apply(db, schemaPath, opts); err != nil {

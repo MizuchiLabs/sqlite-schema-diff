@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -69,9 +70,7 @@ func ReadFiles(dir string) (*schema.Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create in-memory database: %w", err)
 	}
-	defer func() {
-		_ = db.Close()
-	}()
+	defer func() { _ = db.Close() }()
 
 	// Execute each file individually
 	for _, path := range files {
@@ -95,14 +94,13 @@ func ReadFiles(dir string) (*schema.Database, error) {
 // fromDir loads all .sql files from a directory
 func fromDir(dir string) ([]string, error) {
 	var files []string
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(filepath.Clean(dir), func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
 			return err
 		}
 		files = append(files, path)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 
@@ -113,14 +111,13 @@ func fromDir(dir string) ([]string, error) {
 // fromFS loads all .sql files from an fs.FS
 func fromFS(fsys fs.FS, dir string) ([]string, error) {
 	var files []string
-	err := fs.WalkDir(fsys, dir, func(path string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(fsys, path.Clean(dir), func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
 			return err
 		}
 		files = append(files, path)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 

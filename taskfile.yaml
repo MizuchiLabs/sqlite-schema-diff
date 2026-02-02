@@ -15,6 +15,12 @@ tasks:
     cmds:
       - go run . apply --db ./examples/example.db -s ./examples/schema/
 
+  examples:
+    desc: Run examples
+    dir: examples
+    cmds:
+      - go run .
+
   # 󰚰 Update deps
   update:
     desc: Update dependencies
