@@ -75,7 +75,12 @@ func ReadFiles(dir string) (*schema.Database, error) {
 
 	// Execute each file individually
 	for _, path := range files {
-		content, err := os.ReadFile(filepath.Clean(path))
+		var content []byte
+		if baseFS != nil {
+			content, err = fs.ReadFile(baseFS, path)
+		} else {
+			content, err = os.ReadFile(filepath.Clean(path))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}

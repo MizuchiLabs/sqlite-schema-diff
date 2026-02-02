@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	_ "modernc.org/sqlite"
 )
@@ -340,4 +341,76 @@ func openAndExec(path, sqlStr string) (*sql.DB, error) {
 	}
 	_, err = db.Exec(sqlStr)
 	return db, err
+}
+
+func TestReadFiles_WithBaseFS(t *testing.T) {
+	// Create a mock filesystem using fstest.MapFS
+	mockFS := fstest.MapFS{
+		"schema/01_users.sql": &fstest.MapFile{
+			Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`),
+		},
+		"schema/02_posts.sql": &fstest.MapFile{
+			Data: []byte(`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`),
+		},
+		"schema/03_index.sql": &fstest.MapFile{
+			Data: []byte(`CREATE INDEX idx_posts_user ON posts(user_id);`),
+		},
+	}
+
+	// Set the base FS
+	SetBaseFS(mockFS)
+	defer SetBaseFS(nil) // Reset after test
+
+	db, err := ReadFiles("schema")
+	if err != nil {
+		t.Fatalf("ReadFiles with baseFS failed: %v", err)
+	}
+
+	if len(db.Tables) != 2 {
+		t.Errorf("expected 2 tables, got %d", len(db.Tables))
+	}
+	if _, ok := db.Tables["users"]; !ok {
+		t.Error("expected table 'users' to exist")
+	}
+	if _, ok := db.Tables["posts"]; !ok {
+		t.Error("expected table 'posts' to exist")
+	}
+	if len(db.Indexes) != 1 {
+		t.Errorf("expected 1 index, got %d", len(db.Indexes))
+	}
+}
+
+func TestReadFiles_BaseFS_NestedDirs(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"db/migrations/001.sql": &fstest.MapFile{
+			Data: []byte(`CREATE TABLE a (id INTEGER);`),
+		},
+		"db/migrations/sub/002.sql": &fstest.MapFile{
+			Data: []byte(`CREATE TABLE b (id INTEGER);`),
+		},
+	}
+
+	SetBaseFS(mockFS)
+	defer SetBaseFS(nil)
+
+	db, err := ReadFiles("db/migrations")
+	if err != nil {
+		t.Fatalf("ReadFiles with nested dirs failed: %v", err)
+	}
+
+	if len(db.Tables) != 2 {
+		t.Errorf("expected 2 tables from nested dirs, got %d", len(db.Tables))
+	}
+}
+
+func TestReadFiles_BaseFS_NonExistent(t *testing.T) {
+	mockFS := fstest.MapFS{}
+
+	SetBaseFS(mockFS)
+	defer SetBaseFS(nil)
+
+	_, err := ReadFiles("nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent directory in baseFS")
+	}
 }
