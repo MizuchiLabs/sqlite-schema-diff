@@ -191,8 +191,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write tables
 	if len(s.Tables) > 0 {
-		tablesDir := filepath.Clean(filepath.Join(outputDir, "tables"))
-		f, err := os.Create(tablesDir)
+		tableFile := filepath.Clean(filepath.Join(outputDir, "tables.sql"))
+		f, err := os.Create(tableFile)
 		if err != nil {
 			return err
 		}
@@ -210,8 +210,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write indexes
 	if len(s.Indexes) > 0 {
-		indexesDir := filepath.Clean(filepath.Join(outputDir, "indexes"))
-		f, err := os.Create(indexesDir)
+		indexFile := filepath.Clean(filepath.Join(outputDir, "indexes.sql"))
+		f, err := os.Create(indexFile)
 		if err != nil {
 			return err
 		}
@@ -229,8 +229,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write views
 	if len(s.Views) > 0 {
-		viewsDir := filepath.Clean(filepath.Join(outputDir, "views"))
-		f, err := os.Create(viewsDir)
+		viewFile := filepath.Clean(filepath.Join(outputDir, "views.sql"))
+		f, err := os.Create(viewFile)
 		if err != nil {
 			return err
 		}
@@ -248,8 +248,8 @@ func dumpSchema(dbPath, outputDir string) error {
 
 	// Write triggers
 	if len(s.Triggers) > 0 {
-		triggerDir := filepath.Clean(filepath.Join(outputDir, "triggers"))
-		f, err := os.Create(triggerDir)
+		triggerFile := filepath.Clean(filepath.Join(outputDir, "triggers.sql"))
+		f, err := os.Create(triggerFile)
 		if err != nil {
 			return err
 		}
