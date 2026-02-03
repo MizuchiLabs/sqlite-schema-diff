@@ -350,7 +350,9 @@ func TestReadFiles_WithBaseFS(t *testing.T) {
 			Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`),
 		},
 		"schema/02_posts.sql": &fstest.MapFile{
-			Data: []byte(`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`),
+			Data: []byte(
+				`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
+			),
 		},
 		"schema/03_index.sql": &fstest.MapFile{
 			Data: []byte(`CREATE INDEX idx_posts_user ON posts(user_id);`),
@@ -412,5 +414,109 @@ func TestReadFiles_BaseFS_NonExistent(t *testing.T) {
 	_, err := ReadFiles("nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent directory in baseFS")
+	}
+}
+
+func TestFromSQL_WithSchemaQualifiers(t *testing.T) {
+	// Test that SQL with schema qualifiers can be parsed successfully
+	sql := `
+		CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+		CREATE INDEX idx_users_email ON main.users(email);
+	`
+
+	db, err := FromSQL(sql)
+	if err != nil {
+		t.Fatalf("FromSQL() with schema qualifiers failed: %v", err)
+	}
+
+	if len(db.Tables) != 1 {
+		t.Errorf("expected 1 table, got %d", len(db.Tables))
+	}
+	if _, ok := db.Tables["users"]; !ok {
+		t.Error("expected table 'users' to exist")
+	}
+	if len(db.Indexes) != 1 {
+		t.Errorf("expected 1 index, got %d", len(db.Indexes))
+	}
+	if _, ok := db.Indexes["idx_users_email"]; !ok {
+		t.Error("expected index 'idx_users_email' to exist")
+	}
+}
+
+func TestFromDirectory_WithSchemaQualifiers(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create SQL files with schema qualifiers
+	files := map[string]string{
+		"01_tables.sql":  `CREATE TABLE http_routers (id INTEGER PRIMARY KEY, name TEXT);`,
+		"02_indexes.sql": `CREATE INDEX idx_router_name ON main.http_routers(name);`,
+	}
+
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := ReadFiles(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadFiles() with schema qualifiers failed: %v", err)
+	}
+
+	if len(db.Tables) != 1 {
+		t.Errorf("expected 1 table, got %d", len(db.Tables))
+	}
+	if _, ok := db.Tables["http_routers"]; !ok {
+		t.Error("expected table 'http_routers' to exist")
+	}
+	if len(db.Indexes) != 1 {
+		t.Errorf("expected 1 index, got %d", len(db.Indexes))
+	}
+}
+
+func TestFromDirectory_IndexBeforeTable(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Test the scenario where index file comes alphabetically before table file
+	// This was causing "no such table: main.users" errors
+	files := map[string]string{
+		"00_index.sql": `
+			CREATE INDEX idx_users_email ON users (email);
+			CREATE INDEX idx_users_username ON users (username);
+		`,
+		"01_users.sql": `
+			CREATE TABLE users (
+				id INTEGER PRIMARY KEY,
+				email TEXT NOT NULL,
+				username TEXT NOT NULL
+			);
+		`,
+	}
+
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := ReadFiles(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadFiles() with index before table failed: %v", err)
+	}
+
+	if len(db.Tables) != 1 {
+		t.Errorf("expected 1 table, got %d", len(db.Tables))
+	}
+	if _, ok := db.Tables["users"]; !ok {
+		t.Error("expected table 'users' to exist")
+	}
+	if len(db.Indexes) != 2 {
+		t.Errorf("expected 2 indexes, got %d", len(db.Indexes))
+	}
+	if _, ok := db.Indexes["idx_users_email"]; !ok {
+		t.Error("expected index 'idx_users_email' to exist")
+	}
+	if _, ok := db.Indexes["idx_users_username"]; !ok {
+		t.Error("expected index 'idx_users_username' to exist")
 	}
 }

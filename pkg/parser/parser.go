@@ -17,6 +17,12 @@ import (
 
 var baseFS fs.FS
 
+// sqlStatement represents a SQL statement with its source file
+type sqlStatement struct {
+	sql      string
+	fileName string
+}
+
 // SetBaseFS sets the base filesystem for reading schema files.
 // Use an embed.FS to read from embedded files.
 // Pass nil to revert to the OS filesystem.
@@ -72,7 +78,9 @@ func ReadFiles(dir string) (*schema.Database, error) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Execute each file individually
+	// Read all files first and categorize statements
+	var tableStmts, otherStmts []sqlStatement
+
 	for _, path := range files {
 		var content []byte
 		if baseFS != nil {
@@ -84,10 +92,25 @@ func ReadFiles(dir string) (*schema.Database, error) {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 
-		if _, err := db.Exec(string(content)); err != nil {
-			return nil, fmt.Errorf("execute %s: %w", filepath.Base(path), err)
+		// Categorize statements: tables first, then everything else
+		stmts := parseStatements(string(content), filepath.Base(path))
+		for _, stmt := range stmts {
+			if isTableStatement(stmt.sql) {
+				tableStmts = append(tableStmts, stmt)
+			} else {
+				otherStmts = append(otherStmts, stmt)
+			}
 		}
 	}
+
+	// Execute tables first, then indexes/views/triggers
+	allStmts := append(tableStmts, otherStmts...)
+	for _, stmt := range allStmts {
+		if _, err := db.Exec(stmt.sql); err != nil {
+			return nil, fmt.Errorf("execute %s: %w", stmt.fileName, err)
+		}
+	}
+
 	return extractSchema(db)
 }
 
@@ -123,6 +146,34 @@ func fromFS(fsys fs.FS, dir string) ([]string, error) {
 
 	slices.Sort(files)
 	return files, nil
+}
+
+// parseStatements splits SQL content into individual statements
+func parseStatements(content, fileName string) []sqlStatement {
+	// Simple statement splitter - splits on semicolons
+	// This is not perfect (doesn't handle semicolons in strings/comments properly)
+	// but works for most schema files
+	parts := strings.Split(content, ";")
+	var stmts []sqlStatement
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || strings.HasPrefix(part, "--") {
+			continue
+		}
+		stmts = append(stmts, sqlStatement{
+			sql:      part + ";",
+			fileName: fileName,
+		})
+	}
+
+	return stmts
+}
+
+// isTableStatement checks if a SQL statement creates a table
+func isTableStatement(sql string) bool {
+	sql = strings.TrimSpace(strings.ToUpper(sql))
+	return strings.HasPrefix(sql, "CREATE TABLE")
 }
 
 // extractSchema extracts the complete schema from a database connection
