@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -49,7 +50,10 @@ func FromSQL(sqlContent string) (*schema.Database, error) {
 		_ = db.Close()
 	}()
 
-	if _, err := db.Exec(sqlContent); err != nil {
+	// Strip schema qualifiers to allow SQL to work in any database context
+	cleanedSQL := stripSchemaQualifiers(sqlContent)
+
+	if _, err := db.Exec(cleanedSQL); err != nil {
 		return nil, fmt.Errorf("execute schema SQL: %w", err)
 	}
 
@@ -92,8 +96,11 @@ func ReadFiles(dir string) (*schema.Database, error) {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 
+		// Strip schema qualifiers (e.g., "main.table_name" -> "table_name")
+		cleanedContent := stripSchemaQualifiers(string(content))
+
 		// Categorize statements: tables first, then everything else
-		stmts := parseStatements(string(content), filepath.Base(path))
+		stmts := parseStatements(cleanedContent, filepath.Base(path))
 		for _, stmt := range stmts {
 			if isTableStatement(stmt.sql) {
 				tableStmts = append(tableStmts, stmt)
@@ -174,6 +181,12 @@ func parseStatements(content, fileName string) []sqlStatement {
 func isTableStatement(sql string) bool {
 	sql = strings.TrimSpace(strings.ToUpper(sql))
 	return strings.HasPrefix(sql, "CREATE TABLE")
+}
+
+// stripSchemaQualifiers removes schema qualifiers ("main.") from SQL
+func stripSchemaQualifiers(sql string) string {
+	schemaQualifierRe := regexp.MustCompile(`\b(main)\s*\.\s*`)
+	return schemaQualifierRe.ReplaceAllString(sql, "")
 }
 
 // extractSchema extracts the complete schema from a database connection
