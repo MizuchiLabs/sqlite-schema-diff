@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/urfave/cli/v3 v3.6.2
-	modernc.org/sqlite v1.45.0
+	modernc.org/sqlite v1.46.1
 )
 
 require (
