@@ -11,10 +11,9 @@ import (
 )
 
 var (
-	Version = "debug"
-	Commit  string
-	Date    string
-	Dirty   string
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
 )
 
 func main() {
@@ -27,13 +26,6 @@ func main() {
 		Description:           `A lightweight SQLite schema diff tool that compares database schemas and generates migrations`,
 		DefaultCommand:        "help",
 		Commands:              commands,
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:    "version",
-				Aliases: []string{"v"},
-				Usage:   "Print version information",
-			},
-		},
 	}
 
 	// Graceful shutdown
