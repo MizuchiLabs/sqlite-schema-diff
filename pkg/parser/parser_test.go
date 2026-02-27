@@ -120,7 +120,7 @@ func TestFromSQL_ColumnDetails(t *testing.T) {
 		{"id", "INTEGER", false, 1, nil},
 		{"name", "TEXT", true, 0, nil},
 		{"email", "TEXT", false, 0, nil},
-		{"age", "INTEGER", false, 0, ptr("0")},
+		{"age", "INTEGER", false, 0, new("0")},
 		{"bio", "TEXT", false, 0, nil},
 	}
 
@@ -332,7 +332,8 @@ func assertKeys(t *testing.T, name string, got, want []string) {
 	}
 }
 
-func ptr(s string) *string { return &s }
+//go:fix inline
+func ptr(s string) *string { return new(s) }
 
 func openAndExec(path, sqlStr string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)

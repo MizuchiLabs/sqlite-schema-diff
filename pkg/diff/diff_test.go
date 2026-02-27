@@ -716,7 +716,7 @@ func TestGenerateAddColumnSQL(t *testing.T) {
 				Name:    "active",
 				Type:    "INTEGER",
 				NotNull: true,
-				Default: ptr("1"),
+				Default: new("1"),
 			},
 			wantSQL: `ALTER TABLE "users" ADD COLUMN "active" INTEGER NOT NULL DEFAULT 1;`,
 		},
@@ -802,25 +802,25 @@ func TestColumnChanged(t *testing.T) {
 		{
 			name: "default added",
 			from: schema.Column{Name: "flag", Type: "INTEGER"},
-			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
+			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: new("0")},
 			want: true,
 		},
 		{
 			name: "default removed",
-			from: schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
+			from: schema.Column{Name: "flag", Type: "INTEGER", Default: new("0")},
 			to:   schema.Column{Name: "flag", Type: "INTEGER"},
 			want: true,
 		},
 		{
 			name: "default changed",
-			from: schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("0")},
-			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: ptr("1")},
+			from: schema.Column{Name: "flag", Type: "INTEGER", Default: new("0")},
+			to:   schema.Column{Name: "flag", Type: "INTEGER", Default: new("1")},
 			want: true,
 		},
 		{
 			name: "default whitespace normalized",
-			from: schema.Column{Name: "flag", Type: "TEXT", Default: ptr("'foo'")},
-			to:   schema.Column{Name: "flag", Type: "TEXT", Default: ptr(" 'foo' ")},
+			from: schema.Column{Name: "flag", Type: "TEXT", Default: new("'foo'")},
+			to:   schema.Column{Name: "flag", Type: "TEXT", Default: new(" 'foo' ")},
 			want: false,
 		},
 	}
@@ -883,8 +883,4 @@ func initMaps(db *schema.Database) {
 	if db.Triggers == nil {
 		db.Triggers = make(map[string]*schema.Trigger)
 	}
-}
-
-func ptr(s string) *string {
-	return &s
 }
