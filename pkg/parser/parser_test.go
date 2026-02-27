@@ -332,9 +332,6 @@ func assertKeys(t *testing.T, name string, got, want []string) {
 	}
 }
 
-//go:fix inline
-func ptr(s string) *string { return new(s) }
-
 func openAndExec(path, sqlStr string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
