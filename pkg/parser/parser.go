@@ -157,24 +157,163 @@ func fromFS(fsys fs.FS, dir string) ([]string, error) {
 
 // parseStatements splits SQL content into individual statements
 func parseStatements(content, fileName string) []sqlStatement {
-	// Simple statement splitter - splits on semicolons
-	// This is not perfect (doesn't handle semicolons in strings/comments properly)
-	// but works for most schema files
-	parts := strings.Split(content, ";")
 	var stmts []sqlStatement
+	var current strings.Builder
 
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" || strings.HasPrefix(part, "--") {
+	inString := false
+	var stringChar rune
+	inLineComment := false
+	inBlockComment := false
+	beginDepth := 0
+
+	runes := []rune(content)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if inLineComment {
+			if r == '\n' {
+				inLineComment = false
+			}
+			current.WriteRune(r)
 			continue
 		}
+
+		if inBlockComment {
+			if r == '*' && i+1 < len(runes) && runes[i+1] == '/' {
+				inBlockComment = false
+				current.WriteRune(r)
+				current.WriteRune('/')
+				i++
+			} else {
+				current.WriteRune(r)
+			}
+			continue
+		}
+
+		if inString {
+			if r == stringChar {
+				// handle escaped quotes like '' -> '
+				if i+1 < len(runes) && runes[i+1] == stringChar && (stringChar == '\'' || stringChar == '"') {
+					current.WriteRune(r)
+					current.WriteRune(stringChar)
+					i++
+				} else {
+					inString = false
+					current.WriteRune(r)
+				}
+			} else {
+				current.WriteRune(r)
+			}
+			continue
+		}
+
+		isWordBoundary := r <= ' ' || r == ';' || r == '(' || r == ')' || r == ','
+
+		if isWordBoundary && current.Len() > 0 {
+			s := current.String()
+
+			// Only track BEGIN/END if we are inside a CREATE TRIGGER statement
+			stmtUpper := strings.ToUpper(stripLeadingComments(s))
+			isTrigger := strings.HasPrefix(stmtUpper, "CREATE TRIGGER") ||
+				strings.HasPrefix(stmtUpper, "CREATE TEMP TRIGGER") ||
+				strings.HasPrefix(stmtUpper, "CREATE TEMPORARY TRIGGER")
+
+			if isTrigger {
+				lastWordStart := -1
+				for j := len(s) - 1; j >= 0; j-- {
+					ch := rune(s[j])
+					if ch <= ' ' || ch == ';' || ch == '(' || ch == ')' || ch == ',' {
+						lastWordStart = j
+						break
+					}
+				}
+				lastWord := strings.ToUpper(s[lastWordStart+1:])
+				if lastWord == "BEGIN" {
+					beginDepth++
+				} else if lastWord == "END" {
+					beginDepth--
+					if beginDepth < 0 {
+						beginDepth = 0
+					}
+				}
+			}
+		}
+
+		switch r {
+		case '-', '/':
+			if r == '-' && i+1 < len(runes) && runes[i+1] == '-' {
+				inLineComment = true
+				current.WriteRune('-')
+				current.WriteRune('-')
+				i++
+			} else if r == '/' && i+1 < len(runes) && runes[i+1] == '*' {
+				inBlockComment = true
+				current.WriteRune('/')
+				current.WriteRune('*')
+				i++
+			} else {
+				current.WriteRune(r)
+			}
+		case '\'', '"', '`':
+			inString = true
+			stringChar = r
+			current.WriteRune(r)
+		case '[':
+			inString = true
+			stringChar = ']'
+			current.WriteRune(r)
+		case ';':
+			current.WriteRune(r)
+			if beginDepth == 0 {
+				stmt := stripLeadingComments(current.String())
+				if stmt != "" && stmt != ";" {
+					stmts = append(stmts, sqlStatement{
+						sql:      stmt,
+						fileName: fileName,
+					})
+				}
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	stmt := stripLeadingComments(current.String())
+	if stmt != "" && stmt != ";" {
+		if !strings.HasSuffix(stmt, ";") {
+			stmt += ";"
+		}
 		stmts = append(stmts, sqlStatement{
-			sql:      part + ";",
+			sql:      stmt,
 			fileName: fileName,
 		})
 	}
 
 	return stmts
+}
+
+func stripLeadingComments(sql string) string {
+	for {
+		sql = strings.TrimSpace(sql)
+		if strings.HasPrefix(sql, "--") {
+			idx := strings.Index(sql, "\n")
+			if idx == -1 {
+				return ""
+			}
+			sql = sql[idx:]
+		} else if strings.HasPrefix(sql, "/*") {
+			idx := strings.Index(sql, "*/")
+			if idx == -1 {
+				return ""
+			}
+			sql = sql[idx+2:]
+		} else {
+			break
+		}
+	}
+	return strings.TrimSpace(sql)
 }
 
 // isTableStatement checks if a SQL statement creates a table
@@ -245,7 +384,7 @@ func extractTables(db *sql.DB, s *schema.Database) error {
 	for _, ti := range tables {
 		table := &schema.Table{Name: ti.name, SQL: ti.sql}
 
-		colRows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%q)", ti.name))
+		colRows, err := db.Query(fmt.Sprintf("PRAGMA table_xinfo(%q)", ti.name))
 		if err != nil {
 			return err
 		}
@@ -255,8 +394,9 @@ func extractTables(db *sql.DB, s *schema.Database) error {
 			var cname, ctype string
 			var notnull, pk int
 			var dflt sql.NullString
+			var hidden int
 
-			if err := colRows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk); err != nil {
+			if err := colRows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk, &hidden); err != nil {
 				_ = colRows.Close()
 				return err
 			}
@@ -266,6 +406,7 @@ func extractTables(db *sql.DB, s *schema.Database) error {
 				Type:       ctype,
 				NotNull:    notnull == 1,
 				PrimaryKey: pk,
+				Hidden:     hidden,
 			}
 			if dflt.Valid {
 				col.Default = &dflt.String

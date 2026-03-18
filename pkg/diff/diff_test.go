@@ -868,6 +868,73 @@ func TestDefaultForType(t *testing.T) {
 	}
 }
 
+func TestReplaceTableName(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		newName string
+		want    string
+	}{
+		{
+			name:    "simple table",
+			sql:     "CREATE TABLE users (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE \"users__new\" (id int)",
+		},
+		{
+			name:    "if not exists",
+			sql:     "CREATE TABLE IF NOT EXISTS users (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE IF NOT EXISTS \"users__new\" (id int)",
+		},
+		{
+			name:    "double quotes",
+			sql:     "CREATE TABLE \"users - old\" (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE \"users__new\" (id int)",
+		},
+		{
+			name:    "single quotes",
+			sql:     "CREATE TABLE 'users' (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE \"users__new\" (id int)",
+		},
+		{
+			name:    "backticks",
+			sql:     "CREATE TABLE `users` (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE \"users__new\" (id int)",
+		},
+		{
+			name:    "brackets",
+			sql:     "CREATE TABLE [users] (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE \"users__new\" (id int)",
+		},
+		{
+			name:    "multiline",
+			sql:     "CREATE \n TABLE \n users (\n id int)",
+			newName: "users__new",
+			want:    "CREATE \n TABLE \n \"users__new\" (\n id int)",
+		},
+		{
+			name:    "extra spaces",
+			sql:     "CREATE TABLE    users (id int)",
+			newName: "users__new",
+			want:    "CREATE TABLE    \"users__new\" (id int)", // The regex currently collapses the spaces or keeps them depending on capture group 1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := replaceTableName(tt.sql, tt.newName)
+			if got != tt.want {
+				t.Errorf("replaceTableName(%q, %q) = %q, want %q", tt.sql, tt.newName, got, tt.want)
+			}
+		})
+	}
+}
+
 // helpers
 
 func initMaps(db *schema.Database) {

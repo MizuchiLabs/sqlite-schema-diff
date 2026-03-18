@@ -33,6 +33,7 @@ type Column struct {
 	NotNull    bool
 	Default    *string
 	PrimaryKey int // 0 = not PK, 1+ = PK position
+	Hidden     int // 0 = normal, 2 = virtual/generated, 3 = stored
 }
 
 // Index represents a SQLite index

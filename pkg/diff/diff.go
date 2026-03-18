@@ -167,6 +167,10 @@ func columnChanged(from, to schema.Column) bool {
 		return true
 	}
 
+	if from.Hidden != to.Hidden {
+		return true
+	}
+
 	// Compare NOT NULL
 	if from.NotNull != to.NotNull {
 		return true
@@ -303,7 +307,7 @@ func commonColumns(from, to *schema.Table) []string {
 }
 
 var tableNameRe = regexp.MustCompile(
-	`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)["'\x60]?(\w+)["'\x60]?`,
+	`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)\s*(?:"(?:[^"]|"")*"|'(?:[^']|'')*'|\x60(?:[^\x60]|\x60\x60)*\x60|\[[^\]]*\]|[a-zA-Z0-9_]+)`,
 )
 
 func replaceTableName(sql, newName string) string {
