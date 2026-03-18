@@ -27,11 +27,12 @@ jobs:
         with:
           go-version-file: "go.mod"
 
-      - name: Install Task
-        uses: go-task/setup-task@v1
-
-      - name: Run tests
-        run: task lint
+      - name: Lint
+        run: |
+          go mod tidy
+          go fmt ./...
+          go vet ./...
+          go test ./...
 
       - name: Run GolangCI-Lint
         uses: golangci/golangci-lint-action@v9
