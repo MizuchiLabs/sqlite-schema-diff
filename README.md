@@ -184,6 +184,16 @@ schema/
 
 All files are merged. Each object name must be unique across all files.
 
+## FAQ
+
+**Q: What happens when I change a nullable column to NOT NULL?**
+
+A: Existing NULL values are replaced with a type-appropriate empty value during table recreation (for example, empty string for TEXT, 0 for INTEGER).
+
+**Q: Why do quoted table names “stick”?**
+
+A: If a table name is quoted in the schema, the stored schema preserves that quoting. Later unquoting the name in your SQL does not revert it, because there is no reliable way to detect that change.
+
 ## Examples
 
 See `examples/` directory for working examples.
@@ -191,7 +201,3 @@ See `examples/` directory for working examples.
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
