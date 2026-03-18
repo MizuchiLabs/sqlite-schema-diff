@@ -27,9 +27,10 @@ jobs:
         with:
           go-version-file: "go.mod"
 
-      - name: Lint
+      - name: Lint and test
         run: |
           go mod tidy
+          go mod verify
           go fmt ./...
           go vet ./...
           go test ./...
@@ -44,5 +45,5 @@ jobs:
         with:
           args: -exclude-generated ./...
 
-      - name: Build binary
-        run: task build
+      - name: Build
+        run: go build -ldflags="-s -w" -o bin/
