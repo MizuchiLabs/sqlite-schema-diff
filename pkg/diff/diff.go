@@ -142,7 +142,7 @@ func diffTableColumns(from, to *schema.Table) []Change {
 
 	// If we're only adding columns, check if the table SQL has other changes
 	// (e.g., UNIQUE, CHECK, FOREIGN KEY constraints that PRAGMA table_info doesn't expose)
-	definitionChanged := normalizeSQL(from.SQL, true) != normalizeSQL(to.SQL, true)
+	definitionChanged := normalizeSQL(from.SQL) != normalizeSQL(to.SQL)
 	if len(newCols) == 0 && definitionChanged {
 		return []Change{recreateTableChange(from.Name, from, to)}
 	}
@@ -357,7 +357,7 @@ func diffIndexes(from, to *schema.Database, recreatedTables map[string]bool) []C
 				SQL:         []string{ensureSemicolon(toIdx.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromIdx.SQL, false) != normalizeSQL(toIdx.SQL, false) {
+		} else if normalizeSQL(fromIdx.SQL) != normalizeSQL(toIdx.SQL) {
 			// Index changed - drop and recreate
 			changes = append(changes, Change{
 				Type:        DropIndex,
@@ -404,7 +404,7 @@ func diffViews(from, to *schema.Database) []Change {
 				SQL:         []string{ensureSemicolon(toView.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromView.SQL, false) != normalizeSQL(toView.SQL, false) {
+		} else if normalizeSQL(fromView.SQL) != normalizeSQL(toView.SQL) {
 			changes = append(changes, Change{
 				Type:        DropView,
 				Object:      name,
@@ -467,7 +467,7 @@ func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []
 				SQL:         []string{ensureSemicolon(toTrig.SQL)},
 				Destructive: false,
 			})
-		} else if normalizeSQL(fromTrig.SQL, false) != normalizeSQL(toTrig.SQL, false) {
+		} else if normalizeSQL(fromTrig.SQL) != normalizeSQL(toTrig.SQL) {
 			changes = append(changes, Change{
 				Type:        DropTrigger,
 				Object:      name,

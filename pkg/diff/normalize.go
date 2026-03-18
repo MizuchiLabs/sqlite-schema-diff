@@ -9,7 +9,7 @@ import (
 // stringLiteralRe matches SQLite string literals, including escaped quotes (e.g. 'O”Neil')
 var stringLiteralRe = regexp.MustCompile(`'((?:[^']|'')*)'`)
 
-func normalizeSQL(sql string, stripQuotes bool) string {
+func normalizeSQL(sql string) string {
 	// Mask string literals to protect them from normalization
 	var literals []string
 	maskedSQL := stringLiteralRe.ReplaceAllStringFunc(sql, func(match string) string {
@@ -18,7 +18,7 @@ func normalizeSQL(sql string, stripQuotes bool) string {
 		return fmt.Sprintf(" __str_protect_%d__ ", len(literals)-1)
 	})
 
-	normalized := performNormalization(maskedSQL, stripQuotes)
+	normalized := performNormalization(maskedSQL)
 
 	// Unmask string literals, the normalization process lowercases the placeholder, so we match that
 	for i, lit := range literals {
@@ -29,17 +29,18 @@ func normalizeSQL(sql string, stripQuotes bool) string {
 	return normalized
 }
 
-func performNormalization(sql string, stripQuotes bool) string {
+func performNormalization(sql string) string {
 	sql = strings.TrimSpace(sql)
 	sql = strings.TrimSuffix(sql, ";")
 
-	if stripQuotes {
-		// Remove quotes around identifiers (SQLite accepts both quoted and unquoted)
-		sql = strings.ReplaceAll(sql, "\"", "")
-		sql = strings.ReplaceAll(sql, "`", "")
-		sql = strings.ReplaceAll(sql, "[", "")
-		sql = strings.ReplaceAll(sql, "]", "")
-	}
+	// Remove quotes around identifiers (SQLite accepts both quoted and unquoted)
+	// We MUST do this because SQLite's ALTER TABLE RENAME TO forces double quotes
+	// around the new table name in sqlite_master, meaning unquoted schema tables
+	// would infinitely recreate if we did not treat them as identical.
+	sql = strings.ReplaceAll(sql, "\"", "")
+	sql = strings.ReplaceAll(sql, "`", "")
+	sql = strings.ReplaceAll(sql, "[", "")
+	sql = strings.ReplaceAll(sql, "]", "")
 
 	// Collapse all whitespace to single spaces and lowercase everything
 	sql = strings.ToLower(strings.Join(strings.Fields(sql), " "))
