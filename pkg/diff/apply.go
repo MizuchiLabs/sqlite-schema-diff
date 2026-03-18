@@ -82,11 +82,22 @@ func Apply(db *sql.DB, schemaDir string, opts ApplyOptions) error {
 	if err != nil {
 		return fmt.Errorf("foreign key check: %w", err)
 	}
-	hasViolations := rows.Next()
-	_ = rows.Close()
-	if hasViolations {
+	if rows.Next() {
+		var table, parent sql.NullString
+		var rowid, fkid sql.NullInt64
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err == nil {
+			_ = rows.Close()
+			return fmt.Errorf(
+				"migration would create foreign key violation in table %q (row %d) referencing parent %q",
+				table.String,
+				rowid.Int64,
+				parent.String,
+			)
+		}
+		_ = rows.Close()
 		return fmt.Errorf("migration would create foreign key violations")
 	}
+	_ = rows.Close()
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
