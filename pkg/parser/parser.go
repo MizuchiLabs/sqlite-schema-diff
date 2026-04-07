@@ -194,7 +194,8 @@ func parseStatements(content, fileName string) []sqlStatement {
 		if inString {
 			if r == stringChar {
 				// handle escaped quotes like '' -> '
-				if i+1 < len(runes) && runes[i+1] == stringChar && (stringChar == '\'' || stringChar == '"') {
+				if i+1 < len(runes) && runes[i+1] == stringChar &&
+					(stringChar == '\'' || stringChar == '"') {
 					current.WriteRune(r)
 					current.WriteRune(stringChar)
 					i++
@@ -229,9 +230,10 @@ func parseStatements(content, fileName string) []sqlStatement {
 					}
 				}
 				lastWord := strings.ToUpper(s[lastWordStart+1:])
-				if lastWord == "BEGIN" {
+				switch lastWord {
+				case "BEGIN":
 					beginDepth++
-				} else if lastWord == "END" {
+				case "END":
 					beginDepth--
 					if beginDepth < 0 {
 						beginDepth = 0
