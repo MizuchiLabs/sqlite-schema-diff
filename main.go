@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -11,9 +12,9 @@ import (
 )
 
 var (
-	Version   = "dev"
-	Commit    = "none"
-	BuildDate = "unknown"
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
 )
 
 func main() {
@@ -21,9 +22,8 @@ func main() {
 		EnableShellCompletion: true,
 		Suggest:               true,
 		Name:                  "sqlite-schema-diff",
-		Version:               Version,
-		Usage:                 "sqlite-schema-diff [command]",
-		Description:           `A lightweight SQLite schema diff tool that compares database schemas and generates migrations`,
+		Version:               fmt.Sprintf("%s (commit: %s, built: %s)", Version, Commit, Date),
+		Usage:                 "simple migrations for SQLite",
 		DefaultCommand:        "help",
 		Commands:              commands,
 	}
