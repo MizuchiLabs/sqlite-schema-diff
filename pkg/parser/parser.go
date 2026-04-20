@@ -231,7 +231,7 @@ func parseStatements(content, fileName string) []sqlStatement {
 				}
 				lastWord := strings.ToUpper(s[lastWordStart+1:])
 				switch lastWord {
-				case "BEGIN":
+				case "BEGIN", "CASE":
 					beginDepth++
 				case "END":
 					beginDepth--
