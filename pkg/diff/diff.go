@@ -311,7 +311,30 @@ func generateRecreateSQL(name string, from, to *schema.Table) []string {
 
 	// Find common columns for data migration
 	common := commonColumns(from, to)
-	cols := strings.Join(common, ", ")
+
+	// Create SELECT expressions, using COALESCE for columns that became NOT NULL
+	var selectExprs []string
+	var insertCols []string
+	for _, colName := range common {
+		fromCol := from.GetColumn(colName)
+		toCol := to.GetColumn(colName)
+
+		insertCols = append(insertCols, fmt.Sprintf("%q", colName))
+
+		if fromCol != nil && toCol != nil && !fromCol.NotNull && toCol.NotNull {
+			// Column became NOT NULL, provide a default value to prevent constraint failure
+			defValue := defaultForType(toCol.Type)
+			if toCol.Default != nil {
+				defValue = *toCol.Default
+			}
+			selectExprs = append(selectExprs, fmt.Sprintf("COALESCE(%q, %s)", colName, defValue))
+		} else {
+			selectExprs = append(selectExprs, fmt.Sprintf("%q", colName))
+		}
+	}
+
+	cols := strings.Join(insertCols, ", ")
+	selects := strings.Join(selectExprs, ", ")
 
 	createSQL := replaceTableName(to.SQL, tempName)
 
@@ -322,7 +345,7 @@ func generateRecreateSQL(name string, from, to *schema.Table) []string {
 	if len(common) > 0 {
 		stmts = append(
 			stmts,
-			fmt.Sprintf("INSERT INTO %q (%s) SELECT %s FROM %q;", tempName, cols, cols, name),
+			fmt.Sprintf("INSERT INTO %q (%s) SELECT %s FROM %q;", tempName, cols, selects, name),
 		)
 	}
 
@@ -343,8 +366,7 @@ func commonColumns(from, to *schema.Table) []string {
 	var common []string
 	for _, c := range to.Columns {
 		if fromCols[c.Name] {
-			// Quote column names to handle reserved words and special chars
-			common = append(common, fmt.Sprintf("%q", c.Name))
+			common = append(common, c.Name)
 		}
 	}
 	return common
