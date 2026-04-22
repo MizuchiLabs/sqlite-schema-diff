@@ -25,16 +25,12 @@ No more numbered migration files. No more merge conflicts. Just SQL.
 
 ## Installation
 
+Download the latest binary from [Releases](https://github.com/MizuchiLabs/sqlite-schema-diff/releases)
+
+Or compile from source:
+
 ```bash
 go install github.com/mizuchilabs/sqlite-schema-diff@latest
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/mizuchilabs/sqlite-schema-diff
-cd sqlite-schema-diff
-go build -o sqlite-schema-diff ./cmd
 ```
 
 ## Quick Start
