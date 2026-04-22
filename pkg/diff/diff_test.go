@@ -562,8 +562,8 @@ func TestRecreatedTableCascades(t *testing.T) {
 					},
 				},
 			},
-			wantChangeTypes: []ChangeType{RecreateTable, CreateTrigger},
-			wantObjects:     []string{"users", "trg_users_audit"},
+			wantChangeTypes: []ChangeType{DropTrigger, RecreateTable, CreateTrigger},
+			wantObjects:     []string{"trg_users_audit", "users", "trg_users_audit"},
 		},
 		{
 			name: "recreate table skips explicit trigger drop",
@@ -600,9 +600,9 @@ func TestRecreatedTableCascades(t *testing.T) {
 				},
 				Triggers: map[string]*schema.Trigger{}, // trigger removed
 			},
-			// Should only have RecreateTable, not DropTrigger (trigger dropped implicitly with table)
-			wantChangeTypes: []ChangeType{RecreateTable},
-			wantObjects:     []string{"users"},
+			// Explicitly drops trigger to prevent errors during recreation
+			wantChangeTypes: []ChangeType{DropTrigger, RecreateTable},
+			wantObjects:     []string{"trg_old", "users"},
 		},
 		{
 			name: "recreate table with both index and trigger",
@@ -659,8 +659,8 @@ func TestRecreatedTableCascades(t *testing.T) {
 					},
 				},
 			},
-			wantChangeTypes: []ChangeType{RecreateTable, CreateIndex, CreateTrigger},
-			wantObjects:     []string{"posts", "idx_posts_title", "trg_posts_ts"},
+			wantChangeTypes: []ChangeType{DropTrigger, RecreateTable, CreateIndex, CreateTrigger},
+			wantObjects:     []string{"trg_posts_ts", "posts", "idx_posts_title", "trg_posts_ts"},
 		},
 	}
 

@@ -18,6 +18,7 @@ const (
 	CreateTable   ChangeType = "CREATE_TABLE"
 	DropTable     ChangeType = "DROP_TABLE"
 	AddColumn     ChangeType = "ADD_COLUMN"
+	RenameColumn  ChangeType = "RENAME_COLUMN"
 	RecreateTable ChangeType = "RECREATE_TABLE"
 	CreateIndex   ChangeType = "CREATE_INDEX"
 	DropIndex     ChangeType = "DROP_INDEX"
@@ -105,20 +106,63 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 func diffTableColumns(from, to *schema.Table) []Change {
 	var changes []Change
 
-	// Check for dropped columns (requires table recreation)
+	var droppedCols []schema.Column
 	for _, col := range from.Columns {
 		if !to.HasColumn(col.Name) {
-			// Column removed - needs table recreation
-			return []Change{recreateTableChange(from.Name, from, to)}
+			droppedCols = append(droppedCols, col)
 		}
 	}
 
-	// Check for new columns (can use ALTER TABLE ADD COLUMN)
 	var newCols []schema.Column
 	for _, col := range to.Columns {
 		if !from.HasColumn(col.Name) {
 			newCols = append(newCols, col)
 		}
+	}
+
+	// Check for column rename
+	if len(droppedCols) == 1 && len(newCols) == 1 {
+		oldCol := droppedCols[0]
+		newCol := newCols[0]
+
+		// Ensure column properties match
+		if !columnChanged(oldCol, newCol) {
+			fromNorm := normalizeSQL(from.SQL)
+			toNorm := normalizeSQL(to.SQL)
+
+			// Replace old column name with new column name in normalized SQL
+			// Use regex to ensure word boundaries
+			oldNameLower := regexp.QuoteMeta(strings.ToLower(oldCol.Name))
+			re := regexp.MustCompile(`\b` + oldNameLower + `\b`)
+			fromNormRenamed := re.ReplaceAllString(fromNorm, strings.ToLower(newCol.Name))
+
+			if fromNormRenamed == toNorm {
+				return []Change{{
+					Type:   RenameColumn,
+					Object: from.Name,
+					Description: fmt.Sprintf(
+						"Rename column %q to %q on table %q",
+						oldCol.Name,
+						newCol.Name,
+						from.Name,
+					),
+					SQL: []string{
+						fmt.Sprintf(
+							"ALTER TABLE %q RENAME COLUMN %q TO %q;",
+							from.Name,
+							oldCol.Name,
+							newCol.Name,
+						),
+					},
+					Destructive: false,
+				}}
+			}
+		}
+	}
+
+	if len(droppedCols) > 0 {
+		// Column removed (or complex rename) - needs table recreation
+		return []Change{recreateTableChange(from.Name, from, to)}
 	}
 
 	// If new columns are not at the end of the target schema,
@@ -428,9 +472,16 @@ func diffViews(from, to *schema.Database) []Change {
 func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []Change {
 	var changes []Change
 
-	// Dropped triggers (skip if table is being recreated - trigger is dropped implicitly)
+	// Dropped triggers (explicitly drop before table recreation to prevent SQLite errors)
 	for name, trig := range from.Triggers {
 		if recreatedTables[trig.Table] {
+			changes = append(changes, Change{
+				Type:        DropTrigger,
+				Object:      name,
+				Description: fmt.Sprintf("Drop trigger %q (will recreate)", name),
+				SQL:         []string{fmt.Sprintf("DROP TRIGGER IF EXISTS %q;", name)},
+				Destructive: false,
+			})
 			continue
 		}
 		if _, exists := to.Triggers[name]; !exists {
@@ -505,10 +556,11 @@ func sortChanges(changes []Change) {
 		DropTable:     4,
 		RecreateTable: 5,
 		CreateTable:   6,
-		AddColumn:     7,
-		CreateIndex:   8,
-		CreateView:    9,
-		CreateTrigger: 10,
+		RenameColumn:  7,
+		AddColumn:     8,
+		CreateIndex:   9,
+		CreateView:    10,
+		CreateTrigger: 11,
 	}
 
 	slices.SortStableFunc(changes, func(a, b Change) int {
