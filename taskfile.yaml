@@ -20,13 +20,11 @@ tasks:
     cmds:
       - go run .
 
-  # 󰚰 Update deps
   update:
     desc: Update dependencies
     cmds:
       - go get -u ./...
 
-  # 󰉠  Lint / static checks
   lint:
     desc: Run go vet & lint
     cmds:
