@@ -2,7 +2,6 @@ version: "3"
 
 env:
   CGO_ENABLED: 0
-  LD_FLAGS: -s -w -X main.version={{.VERSION}}
 
 tasks:
   diff:
@@ -36,6 +35,7 @@ tasks:
       - go vet ./...
       - govulncheck ./...
       - go test -cover ./...
+      - gosec -exclude-generated ./...
 
   coverage:
     desc: Run coverage
@@ -46,14 +46,9 @@ tasks:
   build:
     desc: Build binary
     cmds:
-      - go build -ldflags "{{.LD_FLAGS}}" -o sqlite-schema-diff
+      - go build -ldflags="-s -w" -trimpath -o sqlite-schema-diff
 
   snapshot:
-    desc: Test snapshot
+    desc: Build snapshot
     cmds:
-      - goreleaser --snapshot --clean --skip=validate
-
-  release:
-    desc: Test release
-    cmds:
-      - goreleaser --release --clean
+      - goreleaser --snapshot --clean --skip=validate,sign,sbom,archive
