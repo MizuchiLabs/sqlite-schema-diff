@@ -3,7 +3,7 @@ module github.com/mizuchilabs/sqlite-schema-diff
 go 1.26.6
 
 require (
-	github.com/urfave/cli/v3 v3.10.1
+	github.com/urfave/cli/v3 v3.11.0
 	modernc.org/sqlite v1.56.0
 )
 
