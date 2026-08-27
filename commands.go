@@ -11,6 +11,7 @@ import (
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 	"github.com/urfave/cli/v3"
 	_ "modernc.org/sqlite"
 )
@@ -49,7 +50,7 @@ var diffCMD = &cli.Command{
 		}
 		defer func() { _ = db.Close() }()
 
-		changes, err := diff.Compare(db, schemaDir)
+		changes, err := diff.Compare(ctx, db, schemaDir)
 		if err != nil {
 			return err
 		}
@@ -117,7 +118,7 @@ var applyCMD = &cli.Command{
 		}
 		defer func() { _ = db.Close() }()
 
-		changes, err := diff.Compare(db, schemaDir)
+		changes, err := diff.Compare(ctx, db, schemaDir)
 		if err != nil {
 			return err
 		}
@@ -159,7 +160,7 @@ var applyCMD = &cli.Command{
 			BackupPath:      backupPath,
 		}
 
-		if err := diff.Apply(db, schemaDir, opts); err != nil {
+		if err := diff.Apply(ctx, db, schemaDir, opts); err != nil {
 			return fmt.Errorf("apply changes: %w", err)
 		}
 
@@ -195,7 +196,7 @@ var dumpCMD = &cli.Command{
 		}
 		defer func() { _ = db.Close() }()
 
-		return dumpSchema(db, outputDir)
+		return dumpSchema(ctx, db, outputDir)
 	},
 }
 
@@ -217,89 +218,36 @@ func showChanges(changes []diff.Change) {
 	fmt.Printf("\nTotal changes: %d (%d destructive)\n", len(changes), destructive)
 }
 
-func dumpSchema(db *sql.DB, outputDir string) error {
+func dumpSchema(ctx context.Context, db *sql.DB, outputDir string) error {
 	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	s, err := parser.FromDB(db)
+	s, err := parser.FromDB(ctx, db)
 	if err != nil {
 		return fmt.Errorf("extract schema: %w", err)
 	}
 
-	// Write tables
-	if len(s.Tables) > 0 {
-		tableFile := filepath.Clean(filepath.Join(outputDir, "tables.sql"))
-		f, err := os.Create(tableFile)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = f.Close()
-		}()
-
-		for _, name := range slices.Sorted(maps.Keys(s.Tables)) {
-			table := s.Tables[name]
-			if _, err := fmt.Fprintf(f, "%s;\n\n", table.SQL); err != nil {
-				return err
-			}
-		}
+	dumps := []struct {
+		file string
+		sqls []string
+	}{
+		{"tables.sql", sortedSQL(s.Tables, func(t *schema.Table) string { return t.SQL })},
+		{"indexes.sql", sortedSQL(s.Indexes, func(i *schema.Index) string { return i.SQL })},
+		{"views.sql", sortedSQL(s.Views, func(v *schema.View) string { return v.SQL })},
+		{"triggers.sql", sortedSQL(s.Triggers, func(t *schema.Trigger) string { return t.SQL })},
 	}
 
-	// Write indexes
-	if len(s.Indexes) > 0 {
-		indexFile := filepath.Clean(filepath.Join(outputDir, "indexes.sql"))
-		f, err := os.Create(indexFile)
-		if err != nil {
+	for _, d := range dumps {
+		path := filepath.Join(outputDir, d.file)
+		if len(d.sqls) == 0 {
+			// Remove stale files from a previous dump so the output
+			// directory always reflects the current database.
+			_ = os.Remove(path)
+			continue
+		}
+		if err := writeSQLFile(path, d.sqls); err != nil {
 			return err
-		}
-		defer func() {
-			_ = f.Close()
-		}()
-
-		for _, name := range slices.Sorted(maps.Keys(s.Indexes)) {
-			index := s.Indexes[name]
-			if _, err := fmt.Fprintf(f, "%s;\n\n", index.SQL); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Write views
-	if len(s.Views) > 0 {
-		viewFile := filepath.Clean(filepath.Join(outputDir, "views.sql"))
-		f, err := os.Create(viewFile)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = f.Close()
-		}()
-
-		for _, name := range slices.Sorted(maps.Keys(s.Views)) {
-			view := s.Views[name]
-			if _, err := fmt.Fprintf(f, "%s;\n\n", view.SQL); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Write triggers
-	if len(s.Triggers) > 0 {
-		triggerFile := filepath.Clean(filepath.Join(outputDir, "triggers.sql"))
-		f, err := os.Create(triggerFile)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = f.Close()
-		}()
-
-		for _, name := range slices.Sorted(maps.Keys(s.Triggers)) {
-			trigger := s.Triggers[name]
-			if _, err := fmt.Fprintf(f, "%s;\n\n", trigger.SQL); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -308,5 +256,34 @@ func dumpSchema(db *sql.DB, outputDir string) error {
 	fmt.Printf("  Indexes: %d\n", len(s.Indexes))
 	fmt.Printf("  Views: %d\n", len(s.Views))
 	fmt.Printf("  Triggers: %d\n", len(s.Triggers))
+	return nil
+}
+
+// sortedSQL collects the SQL definitions of the named objects in name order.
+func sortedSQL[T any](objects map[string]T, sqlOf func(T) string) []string {
+	sqls := make([]string, 0, len(objects))
+	for _, name := range slices.Sorted(maps.Keys(objects)) {
+		sqls = append(sqls, sqlOf(objects[name]))
+	}
+	return sqls
+}
+
+// writeSQLFile writes each SQL statement followed by a blank line.
+func writeSQLFile(name string, sqls []string) (err error) {
+	f, err := os.Create(name)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+
+	for _, sql := range sqls {
+		if _, err := fmt.Fprintf(f, "%s;\n\n", sql); err != nil {
+			return err
+		}
+	}
 	return nil
 }

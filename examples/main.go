@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -21,35 +22,39 @@ const (
 var schemaFS embed.FS
 
 func main() {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	fmt.Println("=== Example 1: Generate Migration SQL ===")
-	if err := generateMigrationSQL(db); err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("=== Example 2: Check Destructive Changes ===")
-	if err := checkDestructiveChanges(db); err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("=== Example 3: Apply Schema Changes ===")
-	if err := apply(db); err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("=== Example 3: Apply Embedded Changes ===")
-	if err := applyEmbedded(db); err != nil {
+	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func generateMigrationSQL(db *sql.DB) error {
-	changes, err := diff.Compare(db, schemaPath)
+func run(ctx context.Context) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	fmt.Println("=== Example 1: Generate Migration SQL ===")
+	if err := generateMigrationSQL(ctx, db); err != nil {
+		return err
+	}
+
+	fmt.Println("=== Example 2: Check Destructive Changes ===")
+	if err := checkDestructiveChanges(ctx, db); err != nil {
+		return err
+	}
+
+	fmt.Println("=== Example 3: Apply Schema Changes ===")
+	if err := apply(ctx, db); err != nil {
+		return err
+	}
+
+	fmt.Println("=== Example 4: Apply Embedded Changes ===")
+	return applyEmbedded(ctx, db)
+}
+
+func generateMigrationSQL(ctx context.Context, db *sql.DB) error {
+	changes, err := diff.Compare(ctx, db, schemaPath)
 	if err != nil {
 		return err
 	}
@@ -71,8 +76,8 @@ func generateMigrationSQL(db *sql.DB) error {
 	return nil
 }
 
-func checkDestructiveChanges(db *sql.DB) error {
-	changes, err := diff.Compare(db, schemaPath)
+func checkDestructiveChanges(ctx context.Context, db *sql.DB) error {
+	changes, err := diff.Compare(ctx, db, schemaPath)
 	if err != nil {
 		return err
 	}
@@ -91,7 +96,7 @@ func checkDestructiveChanges(db *sql.DB) error {
 	return nil
 }
 
-func apply(db *sql.DB) error {
+func apply(ctx context.Context, db *sql.DB) error {
 	// Apply changes with options
 	opts := diff.ApplyOptions{
 		DryRun:          false,
@@ -99,7 +104,7 @@ func apply(db *sql.DB) error {
 		BackupPath:      dbPath + ".backup",
 	}
 
-	if err := diff.Apply(db, schemaPath, opts); err != nil {
+	if err := diff.Apply(ctx, db, schemaPath, opts); err != nil {
 		return fmt.Errorf("apply changes: %w", err)
 	}
 
@@ -107,7 +112,7 @@ func apply(db *sql.DB) error {
 	return nil
 }
 
-func applyEmbedded(db *sql.DB) error {
+func applyEmbedded(ctx context.Context, db *sql.DB) error {
 	parser.SetBaseFS(schemaFS)
 
 	// Apply changes with options
@@ -117,7 +122,7 @@ func applyEmbedded(db *sql.DB) error {
 		BackupPath:      dbPath + ".backup",
 	}
 
-	if err := diff.Apply(db, schemaPath, opts); err != nil {
+	if err := diff.Apply(ctx, db, schemaPath, opts); err != nil {
 		return fmt.Errorf("apply changes: %w", err)
 	}
 
