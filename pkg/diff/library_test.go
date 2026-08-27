@@ -18,7 +18,7 @@ func TestCompare_IdenticalSchema(t *testing.T) {
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
 	)
 
-	changes, err := Compare(db, schemaDir)
+	changes, err := Compare(t.Context(), db, schemaDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestCompare_AddTable(t *testing.T) {
 		CREATE TABLE posts (id INTEGER PRIMARY KEY);
 	`)
 
-	changes, err := Compare(db, schemaDir)
+	changes, err := Compare(t.Context(), db, schemaDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCompare_InvalidSchemaDir(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	defer func() { _ = db.Close() }()
 
-	_, err := Compare(db, "/nonexistent/schema/dir")
+	_, err := Compare(t.Context(), db, "/nonexistent/schema/dir")
 	if err == nil {
 		t.Error("expected error for invalid schema dir")
 	}
@@ -73,7 +73,7 @@ func TestCompareDatabases(t *testing.T) {
 	toDB := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
 	defer func() { _ = toDB.Close() }()
 
-	changes, err := CompareDatabases(fromDB, toDB)
+	changes, err := CompareDatabases(t.Context(), fromDB, toDB)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// stringLiteralRe matches SQLite string literals, including escaped quotes (e.g. 'O”Neil')
+// stringLiteralRe matches SQLite string literals, including escaped quotes (e.g. 'O”Neil').
 var stringLiteralRe = regexp.MustCompile(`'((?:[^']|'')*)'`)
 
 func normalizeSQL(sql string) string {

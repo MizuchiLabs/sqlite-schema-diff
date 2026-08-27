@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -10,13 +11,13 @@ import (
 
 // Compare compares a database against a schema directory and returns changes.
 // If SetBaseFS was called, reads from the embedded filesystem instead.
-func Compare(db *sql.DB, schemaDir string) ([]Change, error) {
-	current, err := parser.FromDB(db)
+func Compare(ctx context.Context, db *sql.DB, schemaDir string) ([]Change, error) {
+	current, err := parser.FromDB(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	target, err := parser.ReadFiles(schemaDir)
+	target, err := parser.ReadFiles(ctx, schemaDir)
 	if err != nil {
 		return nil, err
 	}
@@ -24,14 +25,14 @@ func Compare(db *sql.DB, schemaDir string) ([]Change, error) {
 	return Diff(current, target), nil
 }
 
-// CompareDatabases compares two databases
-func CompareDatabases(from, to *sql.DB) ([]Change, error) {
-	fromSchema, err := parser.FromDB(from)
+// CompareDatabases compares two databases.
+func CompareDatabases(ctx context.Context, from, to *sql.DB) ([]Change, error) {
+	fromSchema, err := parser.FromDB(ctx, from)
 	if err != nil {
 		return nil, err
 	}
 
-	toSchema, err := parser.FromDB(to)
+	toSchema, err := parser.FromDB(ctx, to)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +40,7 @@ func CompareDatabases(from, to *sql.DB) ([]Change, error) {
 	return Diff(fromSchema, toSchema), nil
 }
 
-// GenerateSQL generates a complete migration script
+// GenerateSQL generates a complete migration script.
 func GenerateSQL(changes []Change) string {
 	if len(changes) == 0 {
 		return ""
