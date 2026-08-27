@@ -130,22 +130,22 @@ func main() {
 
 ### Available Functions
 
-| Function                                  | Description                     |
-| ----------------------------------------- | ------------------------------- |
-| `Compare(ctx, db, schemaDir)`             | Diff database against SQL files |
-| `CompareDatabases(ctx, fromDB, toDB)`     | Diff two databases              |
-| `GenerateSQL(changes)`                    | Generate migration SQL          |
-| `HasDestructive(changes)`                 | Check for destructive changes   |
-| `Apply(ctx, db, schemaDir, opts)`         | Apply changes to database       |
+| Function                              | Description                     |
+| ------------------------------------- | ------------------------------- |
+| `Compare(ctx, db, schemaDir)`         | Diff database against SQL files |
+| `CompareDatabases(ctx, fromDB, toDB)` | Diff two databases              |
+| `GenerateSQL(changes)`                | Generate migration SQL          |
+| `HasDestructive(changes)`             | Check for destructive changes   |
+| `Apply(ctx, db, schemaDir, opts)`     | Apply changes to database       |
 
 ### Parser Functions
 
-| Function                      | Description                              |
-| ----------------------------- | ---------------------------------------- |
-| `parser.FromDB(ctx, db)`      | Extract schema from open database        |
-| `parser.FromSQL(ctx, sql)`    | Parse schema from SQL string             |
-| `parser.ReadFiles(ctx, dir)`  | Load schema from directory of .sql files |
-| `parser.SetBaseFS(fsys)`      | Read schema files from an `embed.FS`     |
+| Function                     | Description                              |
+| ---------------------------- | ---------------------------------------- |
+| `parser.FromDB(ctx, db)`     | Extract schema from open database        |
+| `parser.FromSQL(ctx, sql)`   | Parse schema from SQL string             |
+| `parser.ReadFiles(ctx, dir)` | Load schema from directory of .sql files |
+| `parser.SetBaseFS(fsys)`     | Read schema files from an `embed.FS`     |
 
 ## How apply works
 
@@ -173,10 +173,10 @@ To keep your data safe, `apply` follows a fixed sequence:
 
 Operations that may lose data are flagged as destructive:
 
-| Operation        | Risk                                          |
-| ---------------- | --------------------------------------------- |
-| `DROP TABLE`     | Deletes table and all data                    |
-| `RECREATE TABLE` | Required when a table cannot be altered       |
+| Operation        | Risk                                    |
+| ---------------- | --------------------------------------- |
+| `DROP TABLE`     | Deletes table and all data              |
+| `RECREATE TABLE` | Required when a table cannot be altered |
 
 By default, the CLI:
 
