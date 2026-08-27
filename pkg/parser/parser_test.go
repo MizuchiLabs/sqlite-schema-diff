@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -75,7 +77,7 @@ func TestFromSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := FromSQL(tt.sql)
+			db, err := FromSQL(t.Context(), tt.sql)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FromSQL() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -100,7 +102,7 @@ func TestFromSQL_ColumnDetails(t *testing.T) {
 		bio TEXT
 	);`
 
-	db, err := FromSQL(sql)
+	db, err := FromSQL(t.Context(), sql)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +174,7 @@ func TestFromDB(t *testing.T) {
 		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE INDEX idx_name ON users(name);
 	`
-	db, err := FromSQL(schemaSQL)
+	db, err := FromSQL(t.Context(), schemaSQL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +187,7 @@ func TestFromDB(t *testing.T) {
 	defer func() { _ = sqlDB.Close() }()
 
 	// Test FromDB
-	dbFromFile, err := FromDB(sqlDB)
+	dbFromFile, err := FromDB(t.Context(), sqlDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +213,7 @@ func TestFromDirectory(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +243,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +256,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 func TestFromDirectory_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +267,7 @@ func TestFromDirectory_Empty(t *testing.T) {
 }
 
 func TestFromDirectory_NonExistent(t *testing.T) {
-	_, err := ReadFiles("/nonexistent/path")
+	_, err := ReadFiles(t.Context(), "/nonexistent/path")
 	if err == nil {
 		t.Error("expected error for non-existent directory")
 	}
@@ -278,7 +280,7 @@ func TestFromDirectory_InvalidSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := ReadFiles(tmpDir)
+	_, err := ReadFiles(t.Context(), tmpDir)
 	if err == nil {
 		t.Error("expected error for invalid SQL")
 	}
@@ -288,12 +290,20 @@ func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Valid SQL file
-	if err := os.WriteFile(filepath.Join(tmpDir, "01_valid.sql"), []byte(`CREATE TABLE t1(id INT);`), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(tmpDir, "01_valid.sql"),
+		[]byte(`CREATE TABLE t1(id INT);`),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Non-SQL file that should be ignored
-	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte(`This should be ignored`), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(tmpDir, "README.md"),
+		[]byte(`This should be ignored`),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,7 +312,7 @@ func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -361,7 +371,7 @@ func TestReadFiles_WithBaseFS(t *testing.T) {
 	SetBaseFS(mockFS)
 	defer SetBaseFS(nil) // Reset after test
 
-	db, err := ReadFiles("schema")
+	db, err := ReadFiles(t.Context(), "schema")
 	if err != nil {
 		t.Fatalf("ReadFiles with baseFS failed: %v", err)
 	}
@@ -393,7 +403,7 @@ func TestReadFiles_BaseFS_NestedDirs(t *testing.T) {
 	SetBaseFS(mockFS)
 	defer SetBaseFS(nil)
 
-	db, err := ReadFiles("db/migrations")
+	db, err := ReadFiles(t.Context(), "db/migrations")
 	if err != nil {
 		t.Fatalf("ReadFiles with nested dirs failed: %v", err)
 	}
@@ -409,7 +419,7 @@ func TestReadFiles_BaseFS_NonExistent(t *testing.T) {
 	SetBaseFS(mockFS)
 	defer SetBaseFS(nil)
 
-	_, err := ReadFiles("nonexistent")
+	_, err := ReadFiles(t.Context(), "nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent directory in baseFS")
 	}
@@ -422,7 +432,7 @@ func TestFromSQL_WithSchemaQualifiers(t *testing.T) {
 		CREATE INDEX idx_users_email ON main.users(email);
 	`
 
-	db, err := FromSQL(sql)
+	db, err := FromSQL(t.Context(), sql)
 	if err != nil {
 		t.Fatalf("FromSQL() with schema qualifiers failed: %v", err)
 	}
@@ -441,6 +451,44 @@ func TestFromSQL_WithSchemaQualifiers(t *testing.T) {
 	}
 }
 
+func TestFromSQL_PreservesMainInStringLiterals(t *testing.T) {
+	sql := `
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY,
+			note TEXT DEFAULT 'main.title',
+			body TEXT
+		);
+		CREATE TRIGGER log_update AFTER UPDATE ON users
+		BEGIN INSERT INTO audit (message) VALUES ('main.users changed'); END;
+	`
+
+	db, err := FromSQL(t.Context(), sql)
+	if err != nil {
+		t.Fatalf("FromSQL() failed: %v", err)
+	}
+
+	table := db.Tables["users"]
+	if table == nil {
+		t.Fatal("users table not found")
+	}
+
+	note := table.GetColumn("note")
+	if note == nil {
+		t.Fatal("note column not found")
+	}
+	if note.Default == nil || *note.Default != "'main.title'" {
+		t.Errorf("default value corrupted: %v", note.Default)
+	}
+
+	trigger := db.Triggers["log_update"]
+	if trigger == nil {
+		t.Fatal("log_update trigger not found")
+	}
+	if !strings.Contains(trigger.SQL, "'main.users changed'") {
+		t.Errorf("trigger SQL corrupted: %s", trigger.SQL)
+	}
+}
+
 func TestFromDirectory_WithSchemaQualifiers(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -456,7 +504,7 @@ func TestFromDirectory_WithSchemaQualifiers(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatalf("ReadFiles() with schema qualifiers failed: %v", err)
 	}
@@ -497,7 +545,7 @@ func TestFromDirectory_IndexBeforeTable(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(tmpDir)
+	db, err := ReadFiles(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatalf("ReadFiles() with index before table failed: %v", err)
 	}
@@ -516,5 +564,168 @@ func TestFromDirectory_IndexBeforeTable(t *testing.T) {
 	}
 	if _, ok := db.Indexes["idx_users_username"]; !ok {
 		t.Error("expected index 'idx_users_username' to exist")
+	}
+}
+
+func TestFromDB_ExtractsUniqueAndForeignKeyColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	sqlDB, err := openAndExec(dbPath, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY);
+		CREATE TABLE posts (
+			id INTEGER PRIMARY KEY,
+			slug TEXT NOT NULL,
+			tags TEXT NOT NULL,
+			user_id INTEGER REFERENCES users(id),
+			UNIQUE (slug, tags)
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	db, err := FromDB(t.Context(), sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	posts := db.Tables["posts"]
+	if posts == nil {
+		t.Fatal("posts table not found")
+	}
+
+	if !slices.Equal(posts.UniqueColumns, []string{"slug", "tags"}) {
+		t.Errorf("UniqueColumns = %v, want [slug tags]", posts.UniqueColumns)
+	}
+	if !slices.Equal(posts.ForeignKeyColumns, []string{"user_id"}) {
+		t.Errorf("ForeignKeyColumns = %v, want [user_id]", posts.ForeignKeyColumns)
+	}
+
+	users := db.Tables["users"]
+	if users == nil {
+		t.Fatal("users table not found")
+	}
+	if len(users.UniqueColumns) != 0 || len(users.ForeignKeyColumns) != 0 {
+		t.Errorf("users should have no unique/FK columns, got %v / %v",
+			users.UniqueColumns, users.ForeignKeyColumns)
+	}
+}
+
+// TestFromSQL_WeirdSQL feeds hostile SQL through the statement scanner:
+// semicolons inside strings, comments, and quoted identifiers; trigger
+// bodies with CASE and multiple statements; odd line endings and encodings.
+func TestFromSQL_WeirdSQL(t *testing.T) {
+	tests := []struct {
+		name         string
+		sql          string
+		wantTables   []string
+		wantViews    []string
+		wantTriggers []string
+	}{
+		{
+			name:       "semicolon in string literal",
+			sql:        `CREATE TABLE t1 (note TEXT DEFAULT 'a;b');`,
+			wantTables: []string{"t1"},
+		},
+		{
+			name:       "escaped quote in string",
+			sql:        `CREATE TABLE t2 (note TEXT DEFAULT 'it''s');`,
+			wantTables: []string{"t2"},
+		},
+		{
+			name:       "semicolon in line comment",
+			sql:        "-- hi; CREATE TABLE evil (id);\nCREATE TABLE t3 (id);",
+			wantTables: []string{"t3"},
+		},
+		{
+			name:       "semicolon in block comment",
+			sql:        "/* ; */ CREATE TABLE t4 (id);",
+			wantTables: []string{"t4"},
+		},
+		{
+			name:       "unterminated block comment at end",
+			sql:        "CREATE TABLE t5 (id); /* oops",
+			wantTables: []string{"t5"},
+		},
+		{
+			name:       "bracket identifier with semicolon",
+			sql:        `CREATE TABLE [we ird;tbl] (id);`,
+			wantTables: []string{"we ird;tbl"},
+		},
+		{
+			name:       "quoted identifier with semicolon",
+			sql:        `CREATE TABLE "ta;ble" (id);`,
+			wantTables: []string{"ta;ble"},
+		},
+		{
+			name:       "doubled quote in identifier",
+			sql:        `CREATE TABLE "q""t" (id);`,
+			wantTables: []string{`q"t`},
+		},
+		{
+			name: "trigger with CASE keyword",
+			sql: `CREATE TABLE t9 (id, updated_at TEXT);
+				CREATE TRIGGER tr AFTER UPDATE ON t9
+				BEGIN UPDATE t9 SET updated_at = CASE WHEN id THEN 'a' ELSE 'b' END; END;`,
+			wantTables:   []string{"t9"},
+			wantTriggers: []string{"tr"},
+		},
+		{
+			name: "trigger with multiple body statements",
+			sql: `CREATE TABLE t10 (id);
+				CREATE TRIGGER tr10 AFTER INSERT ON t10 BEGIN INSERT INTO t10 VALUES (1); UPDATE t10 SET id = 2; END;`,
+			wantTables:   []string{"t10"},
+			wantTriggers: []string{"tr10"},
+		},
+		{
+			name:       "no trailing semicolon",
+			sql:        "CREATE TABLE t12 (id)",
+			wantTables: []string{"t12"},
+		},
+		{
+			name:       "CRLF line endings",
+			sql:        "CREATE TABLE t13 (id);\r\nCREATE TABLE t14 (id);\r\n",
+			wantTables: []string{"t13", "t14"},
+		},
+		{
+			name:       "quoted main.table",
+			sql:        `CREATE TABLE "main"."t16" (id);`,
+			wantTables: []string{"t16"},
+		},
+		{
+			name:       "string literal containing main.",
+			sql:        `CREATE TABLE t19 (note TEXT DEFAULT 'main.x');`,
+			wantTables: []string{"t19"},
+		},
+		{
+			name:       "without rowid",
+			sql:        `CREATE TABLE t26 (id TEXT PRIMARY KEY, v INT) WITHOUT ROWID;`,
+			wantTables: []string{"t26"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := FromSQL(t.Context(), tt.sql)
+			if err != nil {
+				t.Fatalf("FromSQL() error = %v", err)
+			}
+			assertKeys(t, "tables", keys(db.Tables), tt.wantTables)
+			assertKeys(t, "views", keys(db.Views), tt.wantViews)
+			assertKeys(t, "triggers", keys(db.Triggers), tt.wantTriggers)
+		})
+	}
+}
+
+func TestFromSQL_BlankAndCommentOnly(t *testing.T) {
+	for _, sql := range []string{"", ";;;", "-- nothing\n/* still nothing */", "   \n\t  "} {
+		db, err := FromSQL(t.Context(), sql)
+		if err != nil {
+			t.Fatalf("FromSQL(%q) error = %v", sql, err)
+		}
+		if len(db.Tables)+len(db.Views)+len(db.Triggers) != 0 {
+			t.Errorf("FromSQL(%q) should produce an empty schema", sql)
+		}
 	}
 }
