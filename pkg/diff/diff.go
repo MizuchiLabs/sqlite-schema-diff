@@ -1,22 +1,26 @@
-// Package diff provides schema comparison and migration generation
+// Package diff provides schema comparison and migration generation.
 package diff
 
 import (
 	"cmp"
+	"context"
+	"database/sql"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 )
 
-// ChangeType represents the type of schema change
+// ChangeType represents the type of schema change.
 type ChangeType string
 
 const (
 	CreateTable   ChangeType = "CREATE_TABLE"
 	DropTable     ChangeType = "DROP_TABLE"
+	RenameTable   ChangeType = "RENAME_TABLE"
 	AddColumn     ChangeType = "ADD_COLUMN"
 	RenameColumn  ChangeType = "RENAME_COLUMN"
 	RecreateTable ChangeType = "RECREATE_TABLE"
@@ -28,7 +32,7 @@ const (
 	DropTrigger   ChangeType = "DROP_TRIGGER"
 )
 
-// Change represents a single schema change
+// Change represents a single schema change.
 type Change struct {
 	Type        ChangeType
 	Object      string   // Name of the object being changed
@@ -37,7 +41,7 @@ type Change struct {
 	Destructive bool     // Whether this change may lose data
 }
 
-// Diff compares two schemas and returns the changes
+// Diff compares two schemas and returns the changes.
 func Diff(from, to *schema.Database) []Change {
 	var changes []Change
 
@@ -58,21 +62,44 @@ func Diff(from, to *schema.Database) []Change {
 func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Change {
 	var changes []Change
 
-	// Dropped tables
+	// Tables that were dropped or renamed by letter case only. SQLite table
+	// names are case-insensitive, so "users" -> "USERS" must become a
+	// rename; dropping and recreating would lose all data.
+	renamed := map[string]string{} // old name -> new name
 	for name := range from.Tables {
-		if _, exists := to.Tables[name]; !exists {
+		if _, exists := to.Tables[name]; exists {
+			continue
+		}
+		newName := caseOnlyRename(to.Tables, name)
+		if newName == "" {
 			changes = append(changes, Change{
 				Type:        DropTable,
 				Object:      name,
 				Description: fmt.Sprintf("Drop table %q", name),
-				SQL:         []string{fmt.Sprintf("DROP TABLE %q;", name)},
+				SQL:         []string{fmt.Sprintf("DROP TABLE %s;", schema.QuoteIdentifier(name))},
 				Destructive: true,
 			})
+			continue
 		}
+		renamed[name] = newName
+		// The rename copies data to the new name and drops the old table,
+		// which also drops its indexes and triggers; mark the table so
+		// those are recreated.
+		recreatedTables[name] = true
+		recreatedTables[newName] = true
+		changes = append(changes, Change{
+			Type:        RenameTable,
+			Object:      name,
+			Description: fmt.Sprintf("Rename table %q to %q", name, newName),
+			SQL:         generateCaseRenameSQL(from.Tables[name], to.Tables[newName]),
+		})
 	}
 
-	// New tables
+	// New tables (skip rename targets, they already exist under another name)
 	for name, table := range to.Tables {
+		if isRenameTarget(renamed, name) {
+			continue
+		}
 		if _, exists := from.Tables[name]; !exists {
 			changes = append(changes, Change{
 				Type:        CreateTable,
@@ -84,11 +111,18 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 		}
 	}
 
-	// Modified tables
+	// Modified tables (renamed pairs included: the rename runs first)
 	for name, toTable := range to.Tables {
 		fromTable, exists := from.Tables[name]
 		if !exists {
-			continue
+			orig, ok := renameSource(renamed, name)
+			if !ok {
+				continue
+			}
+			// Operate under the new name; the rename already ran.
+			adjusted := *from.Tables[orig]
+			adjusted.Name = name
+			fromTable = &adjusted
 		}
 
 		tableChanges := diffTableColumns(fromTable, toTable)
@@ -101,6 +135,47 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 	}
 
 	return changes
+}
+
+// caseOnlyRename returns the name of the target table that differs from
+// name only by letter case, or "" when there is no unambiguous match.
+func caseOnlyRename(tables map[string]*schema.Table, name string) string {
+	match := ""
+	for toName := range tables {
+		if toName != name && strings.EqualFold(toName, name) {
+			if match != "" {
+				return "" // ambiguous, do not guess
+			}
+			match = toName
+		}
+	}
+	return match
+}
+
+// generateCaseRenameSQL builds the statements that rename a table by
+// copying it through a temporary table. SQLite resolves table names
+// case-insensitively, so it refuses both CREATE under the new name and
+// ALTER TABLE RENAME to a name that differs only in letter case.
+func generateCaseRenameSQL(from, to *schema.Table) []string {
+	return generateRecreateSQLTo(from.Name, to.Name, from, to)
+}
+
+func isRenameTarget(renamed map[string]string, name string) bool {
+	for _, to := range renamed {
+		if to == name {
+			return true
+		}
+	}
+	return false
+}
+
+func renameSource(renamed map[string]string, name string) (string, bool) {
+	for from, to := range renamed {
+		if to == name {
+			return from, true
+		}
+	}
+	return "", false
 }
 
 func diffTableColumns(from, to *schema.Table) []Change {
@@ -148,10 +223,10 @@ func diffTableColumns(from, to *schema.Table) []Change {
 					),
 					SQL: []string{
 						fmt.Sprintf(
-							"ALTER TABLE %q RENAME COLUMN %q TO %q;",
-							from.Name,
-							oldCol.Name,
-							newCol.Name,
+							"ALTER TABLE %s RENAME COLUMN %s TO %s;",
+							schema.QuoteIdentifier(from.Name),
+							schema.QuoteIdentifier(oldCol.Name),
+							schema.QuoteIdentifier(newCol.Name),
 						),
 					},
 					Destructive: false,
@@ -165,9 +240,10 @@ func diffTableColumns(from, to *schema.Table) []Change {
 		return []Change{recreateTableChange(from.Name, from, to)}
 	}
 
-	// If new columns are not at the end of the target schema,
-	// we need RECREATE_TABLE to preserve column order
-	if len(newCols) > 0 && !newColumnsAtEnd(from, to) {
+	// If new columns cannot be added via ALTER TABLE without losing
+	// constraints or diverging from the target definition,
+	// we need RECREATE_TABLE
+	if len(newCols) > 0 && !canAddColumns(from, to, newCols) {
 		return []Change{recreateTableChange(from.Name, from, to)}
 	}
 
@@ -241,6 +317,115 @@ func columnChanged(from, to schema.Column) bool {
 	return false
 }
 
+// canAddColumns reports whether every new column can be appended with
+// ALTER TABLE ADD COLUMN such that the result matches the target exactly.
+// Fast static guards cover the documented SQLite restrictions (UNIQUE and
+// PRIMARY KEY columns, generated columns, non-constant defaults), and a
+// simulation replays the ADD COLUMN statements on a scratch in-memory copy
+// of the source table to catch everything PRAGMAs cannot see, such as
+// CHECK constraints and other table-level constraint changes.
+func canAddColumns(from, to *schema.Table, newCols []schema.Column) bool {
+	// ALTER TABLE ADD COLUMN always appends to the end, so new columns in
+	// the middle require a recreation to preserve column order.
+	if !newColumnsAtEnd(from, to) {
+		return false
+	}
+
+	for _, col := range newCols {
+		switch {
+		case col.PrimaryKey > 0, col.Hidden != 0:
+			return false
+		case slices.Contains(to.UniqueColumns, col.Name),
+			slices.Contains(to.ForeignKeyColumns, col.Name):
+			return false
+		case col.NotNull && col.Default == nil:
+			// A default would have to be synthesized, which diverges from
+			// the target definition.
+			return false
+		case col.Default != nil && isNonConstantDefault(*col.Default):
+			return false
+		}
+	}
+
+	return simulatedTableMatches(from, to, newCols)
+}
+
+// simulatedTableMatches replays the generated ADD COLUMN statements on a
+// scratch in-memory database and reports whether the resulting table matches
+// the target. If SQLite rejects any statement or the result diverges from
+// the target, the table must be recreated instead.
+func simulatedTableMatches(from, to *schema.Table, newCols []schema.Column) bool {
+	if from.SQL == "" {
+		// Hand-built schemas without SQL cannot be simulated; the static
+		// guards alone decide.
+		return true
+	}
+
+	// The scratch database is transient, in-memory, and contains no data,
+	// so it does not need cancellation: context.Background() is intentional.
+	ctx := context.Background()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	if _, err := db.ExecContext(ctx, from.SQL); err != nil {
+		return false
+	}
+	for _, col := range newCols {
+		if _, err := db.ExecContext(ctx, generateAddColumnSQL(from.Name, col)); err != nil {
+			return false
+		}
+	}
+
+	simulated, err := parser.FromDB(ctx, db)
+	if err != nil {
+		return false
+	}
+	result := simulated.Tables[from.Name]
+	if result == nil {
+		return false
+	}
+
+	return tableMatches(result, to)
+}
+
+// tableMatches reports whether two tables are equivalent for migration
+// purposes: same definition, same columns in the same order, and the same
+// constraint columns.
+func tableMatches(from, to *schema.Table) bool {
+	if normalizeSQL(from.SQL) != normalizeSQL(to.SQL) {
+		return false
+	}
+	if len(from.Columns) != len(to.Columns) {
+		return false
+	}
+	for i, toCol := range to.Columns {
+		fromCol := &from.Columns[i]
+		if fromCol.Name != toCol.Name || columnChanged(*fromCol, toCol) {
+			return false
+		}
+	}
+	if !slices.Equal(from.UniqueColumns, to.UniqueColumns) {
+		return false
+	}
+	return slices.Equal(from.ForeignKeyColumns, to.ForeignKeyColumns)
+}
+
+// isNonConstantDefault reports whether a default value is rejected by
+// ALTER TABLE ADD COLUMN on a non-empty table.
+func isNonConstantDefault(d string) bool {
+	d = strings.ToUpper(strings.TrimSpace(d))
+	return strings.HasPrefix(d, "(") ||
+		d == "CURRENT_TIME" ||
+		d == "CURRENT_DATE" ||
+		d == "CURRENT_TIMESTAMP"
+}
+
 // newColumnsAtEnd checks if all new columns appear at the end of the target schema.
 // This is important because ALTER TABLE ADD COLUMN always appends to the end.
 // If new columns should be in the middle, we need RECREATE_TABLE to preserve order.
@@ -259,7 +444,12 @@ func newColumnsAtEnd(from, to *schema.Table) bool {
 
 func generateAddColumnSQL(tableName string, col schema.Column) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "ALTER TABLE %q ADD COLUMN %q", tableName, col.Name)
+	fmt.Fprintf(
+		&sb,
+		"ALTER TABLE %s ADD COLUMN %s",
+		schema.QuoteIdentifier(tableName),
+		schema.QuoteIdentifier(col.Name),
+	)
 
 	if col.Type != "" {
 		fmt.Fprintf(&sb, " %s", col.Type)
@@ -269,10 +459,9 @@ func generateAddColumnSQL(tableName string, col schema.Column) string {
 		if col.Default != nil {
 			fmt.Fprintf(&sb, " NOT NULL DEFAULT %s", *col.Default)
 		} else {
-			// SQLite requires DEFAULT for NOT NULL in ADD COLUMN
-			// Use type-appropriate default
-			sb.WriteString(" DEFAULT ")
-			sb.WriteString(defaultForType(col.Type))
+			// SQLite requires a DEFAULT for NOT NULL columns added via
+			// ALTER TABLE, so fall back to a type-appropriate value.
+			fmt.Fprintf(&sb, " NOT NULL DEFAULT %s", defaultForType(col.Type))
 		}
 	} else if col.Default != nil {
 		fmt.Fprintf(&sb, " DEFAULT %s", *col.Default)
@@ -282,7 +471,7 @@ func generateAddColumnSQL(tableName string, col schema.Column) string {
 	return sb.String()
 }
 
-// defaultForType returns a sensible default value for a SQLite type
+// defaultForType returns a sensible default value for a SQLite type.
 func defaultForType(colType string) string {
 	switch strings.ToUpper(colType) {
 	case "INTEGER", "INT", "BIGINT", "SMALLINT", "TINYINT":
@@ -307,34 +496,59 @@ func recreateTableChange(name string, from, to *schema.Table) Change {
 }
 
 func generateRecreateSQL(name string, from, to *schema.Table) []string {
+	return generateRecreateSQLTo(name, name, from, to)
+}
+
+// generateRecreateSQLTo builds the statements that recreate the table under
+// finalName, copying the data from its current name. A temporary table is
+// used because SQLite resolves table names case-insensitively: the new
+// table must not exist while the old one is still there.
+func generateRecreateSQLTo(name, finalName string, from, to *schema.Table) []string {
 	tempName := name + "__new"
 
-	// Find common columns for data migration
-	common := commonColumns(from, to)
-
-	// Create SELECT expressions, using COALESCE for columns that became NOT NULL
-	var selectExprs []string
+	// Build the data migration in one pass so the INSERT column list and
+	// the SELECT expressions stay aligned: shared columns are copied
+	// (with COALESCE for columns that became NOT NULL), new columns are
+	// filled with their default, and generated columns are left out
+	// because SQLite computes them automatically.
 	var insertCols []string
-	for _, colName := range common {
-		fromCol := from.GetColumn(colName)
-		toCol := to.GetColumn(colName)
+	var selectExprs []string
+	for i := range to.Columns {
+		toCol := &to.Columns[i]
+		if toCol.Hidden != 0 {
+			continue
+		}
 
-		insertCols = append(insertCols, fmt.Sprintf("%q", colName))
+		fromCol := from.GetColumn(toCol.Name)
+		if fromCol == nil {
+			// New column: fill it with its default so NOT NULL holds for
+			// the migrated rows.
+			if toCol.Default != nil {
+				insertCols = append(insertCols, schema.QuoteIdentifier(toCol.Name))
+				selectExprs = append(selectExprs, *toCol.Default)
+			} else if toCol.NotNull {
+				insertCols = append(insertCols, schema.QuoteIdentifier(toCol.Name))
+				selectExprs = append(selectExprs, defaultForType(toCol.Type))
+			}
+			continue
+		}
 
-		if fromCol != nil && toCol != nil && !fromCol.NotNull && toCol.NotNull {
+		insertCols = append(insertCols, schema.QuoteIdentifier(toCol.Name))
+
+		if !fromCol.NotNull && toCol.NotNull {
 			// Column became NOT NULL, provide a default value to prevent constraint failure
 			defValue := defaultForType(toCol.Type)
 			if toCol.Default != nil {
 				defValue = *toCol.Default
 			}
-			selectExprs = append(selectExprs, fmt.Sprintf("COALESCE(%q, %s)", colName, defValue))
+			selectExprs = append(
+				selectExprs,
+				fmt.Sprintf("COALESCE(%s, %s)", schema.QuoteIdentifier(toCol.Name), defValue),
+			)
 		} else {
-			selectExprs = append(selectExprs, fmt.Sprintf("%q", colName))
+			selectExprs = append(selectExprs, schema.QuoteIdentifier(toCol.Name))
 		}
 	}
-
-	cols := strings.Join(insertCols, ", ")
-	selects := strings.Join(selectExprs, ", ")
 
 	createSQL := replaceTableName(to.SQL, tempName)
 
@@ -342,34 +556,30 @@ func generateRecreateSQL(name string, from, to *schema.Table) []string {
 		ensureSemicolon(createSQL),
 	}
 
-	if len(common) > 0 {
+	if len(insertCols) > 0 {
 		stmts = append(
 			stmts,
-			fmt.Sprintf("INSERT INTO %q (%s) SELECT %s FROM %q;", tempName, cols, selects, name),
+			fmt.Sprintf(
+				"INSERT INTO %s (%s) SELECT %s FROM %s;",
+				schema.QuoteIdentifier(tempName),
+				strings.Join(insertCols, ", "),
+				strings.Join(selectExprs, ", "),
+				schema.QuoteIdentifier(name),
+			),
 		)
 	}
 
-	stmts = append(stmts,
-		fmt.Sprintf("DROP TABLE %q;", name),
-		fmt.Sprintf("ALTER TABLE %q RENAME TO %q;", tempName, name),
+	stmts = append(
+		stmts,
+		fmt.Sprintf("DROP TABLE %s;", schema.QuoteIdentifier(name)),
+		fmt.Sprintf(
+			"ALTER TABLE %s RENAME TO %s;",
+			schema.QuoteIdentifier(tempName),
+			schema.QuoteIdentifier(finalName),
+		),
 	)
 
 	return stmts
-}
-
-func commonColumns(from, to *schema.Table) []string {
-	fromCols := make(map[string]bool)
-	for _, c := range from.Columns {
-		fromCols[c.Name] = true
-	}
-
-	var common []string
-	for _, c := range to.Columns {
-		if fromCols[c.Name] {
-			common = append(common, c.Name)
-		}
-	}
-	return common
 }
 
 var tableNameRe = regexp.MustCompile(
@@ -377,188 +587,137 @@ var tableNameRe = regexp.MustCompile(
 )
 
 func replaceTableName(sql, newName string) string {
-	return tableNameRe.ReplaceAllString(sql, fmt.Sprintf("${1}%q", newName))
+	return tableNameRe.ReplaceAllStringFunc(sql, func(match string) string {
+		prefix := tableNameRe.FindStringSubmatch(match)[1]
+		return prefix + schema.QuoteIdentifier(newName)
+	})
+}
+
+// diffNamed compares named schema objects (indexes, views, or triggers)
+// between the two schemas. Objects attached to a recreated table are
+// recreated unconditionally; when dropOnRecreate is true they are also
+// dropped up front, which triggers require because they are not dropped
+// implicitly with their table.
+func diffNamed[T any](
+	from, to map[string]T,
+	tableOf func(T) string,
+	sqlOf func(T) string,
+	recreatedTables map[string]bool,
+	dropOnRecreate bool,
+	createType, dropType ChangeType,
+) []Change {
+	var changes []Change
+
+	// Dropped objects
+	for name, obj := range from {
+		if recreatedTables[tableOf(obj)] {
+			if dropOnRecreate {
+				changes = append(changes, dropChange(dropType, name, "(will recreate)"))
+			}
+			continue
+		}
+		if _, exists := to[name]; !exists {
+			changes = append(changes, dropChange(dropType, name, ""))
+		}
+	}
+
+	// New or modified objects
+	for name, obj := range to {
+		if recreatedTables[tableOf(obj)] {
+			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+			continue
+		}
+
+		prev, exists := from[name]
+		switch {
+		case !exists:
+			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+		case normalizeSQL(sqlOf(prev)) != normalizeSQL(sqlOf(obj)):
+			changes = append(changes, dropChange(dropType, name, "(will recreate)"))
+			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+		}
+	}
+
+	return changes
+}
+
+// objectKind returns the human-readable object kind for a change type.
+func objectKind(t ChangeType) string {
+	switch t {
+	case CreateTable, DropTable, RecreateTable, RenameTable:
+		return "table"
+	case AddColumn, RenameColumn:
+		return "column"
+	case CreateIndex, DropIndex:
+		return "index"
+	case CreateView, DropView:
+		return "view"
+	case CreateTrigger, DropTrigger:
+		return "trigger"
+	default:
+		return "object"
+	}
+}
+
+func createChange(t ChangeType, name, objectSQL string) Change {
+	return Change{
+		Type:        t,
+		Object:      name,
+		Description: fmt.Sprintf("Create %s %q", objectKind(t), name),
+		SQL:         []string{ensureSemicolon(objectSQL)},
+	}
+}
+
+func dropChange(t ChangeType, name, suffix string) Change {
+	description := fmt.Sprintf("Drop %s %q", objectKind(t), name)
+	if suffix != "" {
+		description += " " + suffix
+	}
+	return Change{
+		Type:        t,
+		Object:      name,
+		Description: description,
+		SQL: []string{
+			fmt.Sprintf(
+				"DROP %s IF EXISTS %s;",
+				strings.ToUpper(objectKind(t)),
+				schema.QuoteIdentifier(name),
+			),
+		},
+	}
 }
 
 func diffIndexes(from, to *schema.Database, recreatedTables map[string]bool) []Change {
-	var changes []Change
-
-	// Dropped indexes (skip if table is being recreated - index is dropped implicitly)
-	for name, idx := range from.Indexes {
-		if recreatedTables[idx.Table] {
-			continue
-		}
-		if _, exists := to.Indexes[name]; !exists {
-			changes = append(changes, Change{
-				Type:        DropIndex,
-				Object:      name,
-				Description: fmt.Sprintf("Drop index %q", name),
-				SQL:         []string{fmt.Sprintf("DROP INDEX IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-		}
-	}
-
-	// New or modified indexes
-	for name, toIdx := range to.Indexes {
-		fromIdx, exists := from.Indexes[name]
-
-		// If the table is being recreated, we need to create the index
-		if recreatedTables[toIdx.Table] {
-			changes = append(changes, Change{
-				Type:        CreateIndex,
-				Object:      name,
-				Description: fmt.Sprintf("Create index %q", name),
-				SQL:         []string{ensureSemicolon(toIdx.SQL)},
-				Destructive: false,
-			})
-			continue
-		}
-
-		if !exists {
-			changes = append(changes, Change{
-				Type:        CreateIndex,
-				Object:      name,
-				Description: fmt.Sprintf("Create index %q", name),
-				SQL:         []string{ensureSemicolon(toIdx.SQL)},
-				Destructive: false,
-			})
-		} else if normalizeSQL(fromIdx.SQL) != normalizeSQL(toIdx.SQL) {
-			// Index changed - drop and recreate
-			changes = append(changes, Change{
-				Type:        DropIndex,
-				Object:      name,
-				Description: fmt.Sprintf("Drop index %q (will recreate)", name),
-				SQL:         []string{fmt.Sprintf("DROP INDEX IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-			changes = append(changes, Change{
-				Type:        CreateIndex,
-				Object:      name,
-				Description: fmt.Sprintf("Create index %q", name),
-				SQL:         []string{ensureSemicolon(toIdx.SQL)},
-				Destructive: false,
-			})
-		}
-	}
-
-	return changes
+	return diffNamed(
+		from.Indexes, to.Indexes,
+		func(i *schema.Index) string { return i.Table },
+		func(i *schema.Index) string { return i.SQL },
+		recreatedTables,
+		false,
+		CreateIndex, DropIndex,
+	)
 }
 
 func diffViews(from, to *schema.Database) []Change {
-	var changes []Change
-
-	for name := range from.Views {
-		if _, exists := to.Views[name]; !exists {
-			changes = append(changes, Change{
-				Type:        DropView,
-				Object:      name,
-				Description: fmt.Sprintf("Drop view %q", name),
-				SQL:         []string{fmt.Sprintf("DROP VIEW IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-		}
-	}
-
-	for name, toView := range to.Views {
-		fromView, exists := from.Views[name]
-		if !exists {
-			changes = append(changes, Change{
-				Type:        CreateView,
-				Object:      name,
-				Description: fmt.Sprintf("Create view %q", name),
-				SQL:         []string{ensureSemicolon(toView.SQL)},
-				Destructive: false,
-			})
-		} else if normalizeSQL(fromView.SQL) != normalizeSQL(toView.SQL) {
-			changes = append(changes, Change{
-				Type:        DropView,
-				Object:      name,
-				Description: fmt.Sprintf("Drop view %q (will recreate)", name),
-				SQL:         []string{fmt.Sprintf("DROP VIEW IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-			changes = append(changes, Change{
-				Type:        CreateView,
-				Object:      name,
-				Description: fmt.Sprintf("Create view %q", name),
-				SQL:         []string{ensureSemicolon(toView.SQL)},
-				Destructive: false,
-			})
-		}
-	}
-
-	return changes
+	return diffNamed(
+		from.Views, to.Views,
+		func(_ *schema.View) string { return "" },
+		func(v *schema.View) string { return v.SQL },
+		nil,
+		false,
+		CreateView, DropView,
+	)
 }
 
 func diffTriggers(from, to *schema.Database, recreatedTables map[string]bool) []Change {
-	var changes []Change
-
-	// Dropped triggers (explicitly drop before table recreation to prevent SQLite errors)
-	for name, trig := range from.Triggers {
-		if recreatedTables[trig.Table] {
-			changes = append(changes, Change{
-				Type:        DropTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Drop trigger %q (will recreate)", name),
-				SQL:         []string{fmt.Sprintf("DROP TRIGGER IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-			continue
-		}
-		if _, exists := to.Triggers[name]; !exists {
-			changes = append(changes, Change{
-				Type:        DropTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Drop trigger %q", name),
-				SQL:         []string{fmt.Sprintf("DROP TRIGGER IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-		}
-	}
-
-	for name, toTrig := range to.Triggers {
-		fromTrig, exists := from.Triggers[name]
-
-		// If the table is being recreated, we need to create the trigger
-		if recreatedTables[toTrig.Table] {
-			changes = append(changes, Change{
-				Type:        CreateTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Create trigger %q", name),
-				SQL:         []string{ensureSemicolon(toTrig.SQL)},
-				Destructive: false,
-			})
-			continue
-		}
-
-		if !exists {
-			changes = append(changes, Change{
-				Type:        CreateTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Create trigger %q", name),
-				SQL:         []string{ensureSemicolon(toTrig.SQL)},
-				Destructive: false,
-			})
-		} else if normalizeSQL(fromTrig.SQL) != normalizeSQL(toTrig.SQL) {
-			changes = append(changes, Change{
-				Type:        DropTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Drop trigger %q (will recreate)", name),
-				SQL:         []string{fmt.Sprintf("DROP TRIGGER IF EXISTS %q;", name)},
-				Destructive: false,
-			})
-			changes = append(changes, Change{
-				Type:        CreateTrigger,
-				Object:      name,
-				Description: fmt.Sprintf("Create trigger %q", name),
-				SQL:         []string{ensureSemicolon(toTrig.SQL)},
-				Destructive: false,
-			})
-		}
-	}
-
-	return changes
+	return diffNamed(
+		from.Triggers, to.Triggers,
+		func(t *schema.Trigger) string { return t.Table },
+		func(t *schema.Trigger) string { return t.SQL },
+		recreatedTables,
+		true,
+		CreateTrigger, DropTrigger,
+	)
 }
 
 func ensureSemicolon(sql string) string {
@@ -569,7 +728,7 @@ func ensureSemicolon(sql string) string {
 	return sql
 }
 
-// sortChanges orders changes for safe execution
+// sortChanges orders changes for safe execution.
 func sortChanges(changes []Change) {
 	priority := map[ChangeType]int{
 		DropTrigger:   1,
@@ -577,12 +736,13 @@ func sortChanges(changes []Change) {
 		DropIndex:     3,
 		DropTable:     4,
 		RecreateTable: 5,
-		CreateTable:   6,
-		RenameColumn:  7,
-		AddColumn:     8,
-		CreateIndex:   9,
-		CreateView:    10,
-		CreateTrigger: 11,
+		RenameTable:   6,
+		CreateTable:   7,
+		RenameColumn:  8,
+		AddColumn:     9,
+		CreateIndex:   10,
+		CreateView:    11,
+		CreateTrigger: 12,
 	}
 
 	slices.SortStableFunc(changes, func(a, b Change) int {
@@ -594,7 +754,7 @@ func sortChanges(changes []Change) {
 	})
 }
 
-// HasDestructive returns true if any changes are destructive
+// HasDestructive returns true if any changes are destructive.
 func HasDestructive(changes []Change) bool {
 	for _, c := range changes {
 		if c.Destructive {

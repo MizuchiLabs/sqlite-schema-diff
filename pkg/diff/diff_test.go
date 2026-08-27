@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
@@ -724,13 +726,13 @@ func TestGenerateAddColumnSQL(t *testing.T) {
 			name:      "not null integer without default gets zero",
 			tableName: "users",
 			col:       schema.Column{Name: "count", Type: "INTEGER", NotNull: true},
-			wantSQL:   `ALTER TABLE "users" ADD COLUMN "count" INTEGER DEFAULT 0;`,
+			wantSQL:   `ALTER TABLE "users" ADD COLUMN "count" INTEGER NOT NULL DEFAULT 0;`,
 		},
 		{
 			name:      "not null text without default gets empty string",
 			tableName: "users",
 			col:       schema.Column{Name: "status", Type: "TEXT", NotNull: true},
-			wantSQL:   `ALTER TABLE "users" ADD COLUMN "status" TEXT DEFAULT '';`,
+			wantSQL:   `ALTER TABLE "users" ADD COLUMN "status" TEXT NOT NULL DEFAULT '';`,
 		},
 	}
 
@@ -949,5 +951,271 @@ func initMaps(db *schema.Database) {
 	}
 	if db.Triggers == nil {
 		db.Triggers = make(map[string]*schema.Trigger)
+	}
+}
+
+func TestCanAddColumns(t *testing.T) {
+	from := &schema.Table{
+		Name:    "users",
+		Columns: []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}},
+		SQL:     `CREATE TABLE users (id INTEGER PRIMARY KEY)`,
+	}
+
+	tests := []struct {
+		name    string
+		col     schema.Column
+		after   schema.Column
+		inFrom  bool
+		unique  []string
+		fks     []string
+		toSQL   string // overrides the generated target definition
+		want    bool
+		wantSQL string
+	}{
+		{
+			name:    "nullable column can be added",
+			col:     schema.Column{Name: "bio", Type: "TEXT"},
+			want:    true,
+			wantSQL: `ALTER TABLE "users" ADD COLUMN "bio" TEXT;`,
+		},
+		{
+			name: "not null with constant default can be added",
+			col: schema.Column{
+				Name:    "status",
+				Type:    "TEXT",
+				NotNull: true,
+				Default: new("'active'"),
+			},
+			want:    true,
+			wantSQL: `ALTER TABLE "users" ADD COLUMN "status" TEXT NOT NULL DEFAULT 'active';`,
+			toSQL:   `CREATE TABLE users (id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active')`,
+		},
+		{
+			name: "not null without default is recreated",
+			col:  schema.Column{Name: "email", Type: "TEXT", NotNull: true},
+			want: false,
+		},
+		{
+			name: "non-constant default is recreated",
+			col: schema.Column{
+				Name:    "created_at",
+				Type:    "DATETIME",
+				Default: new("CURRENT_TIMESTAMP"),
+			},
+			want: false,
+		},
+		{
+			name: "parenthesized default is recreated",
+			col:  schema.Column{Name: "score", Type: "INTEGER", Default: new("(1+1)")},
+			want: false,
+		},
+		{
+			name:   "unique constraint column is recreated",
+			col:    schema.Column{Name: "email", Type: "TEXT"},
+			unique: []string{"email"},
+			want:   false,
+		},
+		{
+			name: "primary key column is recreated",
+			col:  schema.Column{Name: "code", Type: "TEXT", PrimaryKey: 1},
+			want: false,
+		},
+		{
+			name: "foreign key column is recreated",
+			col:  schema.Column{Name: "user_id", Type: "INTEGER"},
+			fks:  []string{"user_id"},
+			want: false,
+		},
+		{
+			name: "generated column is recreated",
+			col:  schema.Column{Name: "label", Type: "TEXT", Hidden: 3},
+			want: false,
+		},
+		{
+			name:   "new column in the middle is recreated",
+			col:    schema.Column{Name: "zzz", Type: "TEXT"},
+			after:  schema.Column{Name: "old", Type: "TEXT"},
+			inFrom: true,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fromCols := []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}}
+			toCols := []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}, tt.col}
+			fromSQL := `CREATE TABLE users (id INTEGER PRIMARY KEY)`
+			toSQL := `CREATE TABLE users (id INTEGER PRIMARY KEY, ` +
+				tt.col.Name + ` ` + tt.col.Type + `)`
+			if tt.inFrom {
+				toCols = append(toCols, tt.after)
+				fromCols = append(fromCols, tt.after)
+				fromSQL = `CREATE TABLE users (id INTEGER PRIMARY KEY, ` +
+					tt.after.Name + ` ` + tt.after.Type + `)`
+				toSQL = `CREATE TABLE users (id INTEGER PRIMARY KEY, ` +
+					tt.col.Name + ` ` + tt.col.Type + `, ` +
+					tt.after.Name + ` ` + tt.after.Type + `)`
+			}
+
+			to := &schema.Table{
+				Name:              "users",
+				Columns:           toCols,
+				SQL:               toSQL,
+				UniqueColumns:     tt.unique,
+				ForeignKeyColumns: tt.fks,
+			}
+			if tt.toSQL != "" {
+				to.SQL = tt.toSQL
+			}
+			from.Columns = fromCols
+			from.SQL = fromSQL
+
+			got := canAddColumns(from, to, []schema.Column{tt.col})
+			if got != tt.want {
+				t.Fatalf("canAddColumns() = %v, want %v", got, tt.want)
+			}
+
+			if got && tt.wantSQL != "" {
+				added := diffTableColumns(from, to)
+				if len(added) != 1 || added[0].Type != AddColumn {
+					t.Fatalf("expected single AddColumn change, got %+v", added)
+				}
+				if added[0].SQL[0] != tt.wantSQL {
+					t.Errorf("SQL = %q, want %q", added[0].SQL[0], tt.wantSQL)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateRecreateSQL_FillsDefaultsForNewColumns(t *testing.T) {
+	from := &schema.Table{
+		Name:    "users",
+		Columns: []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}},
+		SQL:     `CREATE TABLE users (id INTEGER PRIMARY KEY)`,
+	}
+	to := &schema.Table{
+		Name: "users",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "email", Type: "TEXT", NotNull: true},
+			{Name: "created_at", Type: "DATETIME", Default: new("CURRENT_TIMESTAMP")},
+			{Name: "bio", Type: "TEXT"},
+		},
+		SQL: `CREATE TABLE "users" (id INTEGER PRIMARY KEY, email TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, bio TEXT)`,
+	}
+
+	stmts := generateRecreateSQL("users", from, to)
+
+	insert := stmts[1]
+	if !strings.Contains(insert, `"email"`) || !strings.Contains(insert, "''") {
+		t.Errorf("expected default fill for NOT NULL new column, got %q", insert)
+	}
+	if !strings.Contains(insert, "CURRENT_TIMESTAMP") {
+		t.Errorf("expected default fill for new column with default, got %q", insert)
+	}
+	if strings.Contains(insert, `"bio"`) {
+		t.Errorf("nullable new column without default should be omitted, got %q", insert)
+	}
+}
+
+// TestDiff_TableConstraintChangeRecreates pins the simulation behavior:
+// adding a column to a table whose target definition also gained a
+// table-level constraint (invisible to PRAGMAs) must recreate the table
+// instead of silently dropping the constraint via ADD COLUMN.
+func TestDiff_TableConstraintChangeRecreates(t *testing.T) {
+	from := &schema.Table{
+		Name:    "users",
+		Columns: []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}},
+		SQL:     `CREATE TABLE users (id INTEGER PRIMARY KEY)`,
+	}
+	to := &schema.Table{
+		Name: "users",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "name", Type: "TEXT"},
+		},
+		SQL: `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, CHECK (length(name) > 0))`,
+	}
+
+	changes := diffTableColumns(from, to)
+	if len(changes) != 1 || changes[0].Type != RecreateTable {
+		t.Fatalf("expected single RecreateTable, got %+v", changes)
+	}
+}
+
+// TestDiff_ExistingConstraintKeepsAddColumn pins SQLite's ALTER TABLE
+// behavior: the added column is placed before table-level constraints in the
+// stored definition, so adding a column to a table that already has a CHECK
+// still converges via ADD COLUMN in a single apply.
+func TestDiff_ExistingConstraintKeepsAddColumn(t *testing.T) {
+	from := &schema.Table{
+		Name:    "users",
+		Columns: []schema.Column{{Name: "id", Type: "INTEGER", PrimaryKey: 1}},
+		SQL:     `CREATE TABLE users (id INTEGER PRIMARY KEY, CHECK (id > 0))`,
+	}
+	to := &schema.Table{
+		Name: "users",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "name", Type: "TEXT"},
+		},
+		SQL: `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, CHECK (id > 0))`,
+	}
+
+	changes := diffTableColumns(from, to)
+	if len(changes) != 1 || changes[0].Type != AddColumn {
+		t.Fatalf("expected single AddColumn, got %+v", changes)
+	}
+}
+
+// TestDiff_CaseOnlyRename pins the rename-not-drop behavior: SQLite table
+// names are case-insensitive, so changing the case in the schema must
+// produce a RENAME_TABLE instead of a destructive drop + create.
+func TestDiff_CaseOnlyRename(t *testing.T) {
+	from := &schema.Database{
+		Tables: map[string]*schema.Table{
+			"users": {
+				Name: "users",
+				SQL:  `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
+				Columns: []schema.Column{
+					{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+					{Name: "name", Type: "TEXT"},
+				},
+			},
+		},
+	}
+	initMaps(from)
+	to := &schema.Database{
+		Tables: map[string]*schema.Table{
+			"USERS": {
+				Name: "USERS",
+				SQL:  `CREATE TABLE USERS (id INTEGER PRIMARY KEY, name TEXT)`,
+				Columns: []schema.Column{
+					{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+					{Name: "name", Type: "TEXT"},
+				},
+			},
+		},
+	}
+	initMaps(to)
+
+	changes := Diff(from, to)
+	if len(changes) != 1 || changes[0].Type != RenameTable {
+		t.Fatalf("expected single RenameTable, got %+v", changes)
+	}
+	if changes[0].Destructive {
+		t.Error("rename must not be flagged destructive")
+	}
+	// SQLite resolves table names case-insensitively, so the rename goes
+	// through a temporary table: create, copy, drop old, rename.
+	wantSQL := []string{
+		`CREATE TABLE "users__new" (id INTEGER PRIMARY KEY, name TEXT);`,
+		`INSERT INTO "users__new" ("id", "name") SELECT "id", "name" FROM "users";`,
+		`DROP TABLE "users";`,
+		`ALTER TABLE "users__new" RENAME TO "USERS";`,
+	}
+	if !slices.Equal(changes[0].SQL, wantSQL) {
+		t.Errorf("SQL = %q, want %q", changes[0].SQL, wantSQL)
 	}
 }
