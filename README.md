@@ -86,7 +86,9 @@ sqlite-schema-diff dump --database app.db --output ./schema
 
 ```go
 import (
+    "context"
     "database/sql"
+    "fmt"
     "log"
 
     "github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
@@ -94,6 +96,8 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
+
     // Open your database connection
     db, err := sql.Open("sqlite", "app.db")
     if err != nil {
@@ -102,7 +106,7 @@ func main() {
     defer db.Close()
 
     // Compare and get changes
-    changes, err := diff.Compare(db, "./schema")
+    changes, err := diff.Compare(ctx, db, "./schema")
     if err != nil {
         log.Fatal(err)
     }
@@ -114,9 +118,10 @@ func main() {
 
     // Generate SQL without applying
     sql := diff.GenerateSQL(changes)
+    _ = sql
 
     // Apply changes
-    err = diff.Apply(db, "./schema", diff.ApplyOptions{
+    err = diff.Apply(ctx, db, "./schema", diff.ApplyOptions{
         BackupPath:      "app.db.backup", // empty string = no backup
         SkipDestructive: false,
     })
@@ -125,21 +130,34 @@ func main() {
 
 ### Available Functions
 
-| Function                         | Description                     |
-| -------------------------------- | ------------------------------- |
-| `Compare(db, schemaDir)`         | Diff database against SQL files |
-| `CompareDatabases(fromDB, toDB)` | Diff two databases              |
-| `GenerateSQL(changes)`           | Generate migration SQL          |
-| `HasDestructive(changes)`        | Check for destructive changes   |
-| `Apply(db, schemaDir, opts)`     | Apply changes to database       |
+| Function                                  | Description                     |
+| ----------------------------------------- | ------------------------------- |
+| `Compare(ctx, db, schemaDir)`             | Diff database against SQL files |
+| `CompareDatabases(ctx, fromDB, toDB)`     | Diff two databases              |
+| `GenerateSQL(changes)`                    | Generate migration SQL          |
+| `HasDestructive(changes)`                 | Check for destructive changes   |
+| `Apply(ctx, db, schemaDir, opts)`         | Apply changes to database       |
 
 ### Parser Functions
 
-| Function                    | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `parser.FromDB(db)`         | Extract schema from open database        |
-| `parser.FromSQL(sql)`       | Parse schema from SQL string             |
-| `parser.FromDirectory(dir)` | Load schema from directory of .sql files |
+| Function                      | Description                              |
+| ----------------------------- | ---------------------------------------- |
+| `parser.FromDB(ctx, db)`      | Extract schema from open database        |
+| `parser.FromSQL(ctx, sql)`    | Parse schema from SQL string             |
+| `parser.ReadFiles(ctx, dir)`  | Load schema from directory of .sql files |
+| `parser.SetBaseFS(fsys)`      | Read schema files from an `embed.FS`     |
+
+## How apply works
+
+To keep your data safe, `apply` follows a fixed sequence:
+
+1. **Backup** (unless `--backup=false`): creates `app.db.backup` via `VACUUM INTO` before touching anything.
+2. **Single transaction**: all statements run on one connection inside one transaction. The transaction is started with `BEGIN IMMEDIATE`, so a concurrent writer fails fast instead of deadlocking, and the connection waits up to 5 seconds for other writers (busy timeout). An interruption rolls everything back, including on Ctrl-C.
+3. **Foreign keys disabled** for the duration of the migration and restored afterwards (only if they were enabled before).
+4. **Foreign key check** before commit: if the migrated schema would violate a foreign key, the transaction is rolled back with an error instead of committing broken data.
+
+> [!NOTE]
+> `PRAGMA foreign_keys` is a per-connection setting. The tool disables it only on its own migration connection and restores it afterwards. If you rely on foreign key enforcement, enable it through the connection string (`file:app.db?_pragma=foreign_keys(1)`) so every connection, including the tool's, starts with it enabled.
 
 ## Supported Objects
 
@@ -148,15 +166,17 @@ func main() {
 - Views
 - Triggers
 
+> [!WARNING]
+> Virtual tables (`CREATE VIRTUAL TABLE`, such as FTS5) are created and diffed, but SQLite does not support `ALTER TABLE` on them. Any detected change to a virtual table fails at apply time; drop and recreate virtual tables manually instead.
+
 ## Destructive Changes
 
 Operations that may lose data are flagged as destructive:
 
-| Operation        | Risk                          |
-| ---------------- | ----------------------------- |
-| `DROP TABLE`     | Deletes table and all data    |
-| `DROP COLUMN`    | Loses column data             |
-| `RECREATE TABLE` | Required for some alterations |
+| Operation        | Risk                                          |
+| ---------------- | --------------------------------------------- |
+| `DROP TABLE`     | Deletes table and all data                    |
+| `RECREATE TABLE` | Required when a table cannot be altered       |
 
 By default, the CLI:
 
@@ -188,7 +208,15 @@ A: Existing NULL values are replaced with a type-appropriate empty value during 
 
 **Q: Why do quoted table names “stick”?**
 
-A: If a table name is quoted in the schema, the stored schema preserves that quoting. Later unquoting the name in your SQL does not revert it, because there is no reliable way to detect that change.
+A: The diff ignores quote style, so quoting differences never trigger changes. However, SQLite preserves the quoting of the stored schema, so the text you see in `sqlite_master` stays as it was written.
+
+**Q: Why does apply recreate a table instead of just adding a column?**
+
+A: SQLite only permits a restricted form of `ALTER TABLE ADD COLUMN`: no UNIQUE or PRIMARY KEY on the new column, no non-constant defaults such as `CURRENT_TIMESTAMP` on a non-empty table, no generated columns, and no foreign keys on the new column. Applying such a change with `ADD COLUMN` would silently drop those constraints, so the tool recreates the table and copies the data instead. The tool verifies every additive change by replaying it against a scratch copy of the table, so constraint changes that PRAGMAs cannot see (such as a new CHECK constraint) also trigger a recreation. The result always matches your schema files.
+
+**Q: Is apply safe to run more than once?**
+
+A: Yes. Once the database matches your schema files, `apply` reports "No schema changes detected" and does nothing. A single apply is enough to converge - you should never need a second one.
 
 ## Examples
 
