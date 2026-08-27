@@ -1,8 +1,5 @@
 version: "3"
 
-env:
-  CGO_ENABLED: 0
-
 tasks:
   diff:
     desc: Run diff
@@ -31,8 +28,10 @@ tasks:
       - go mod tidy
       - go fmt ./...
       - go vet ./...
+      - gofumpt -w .
+      - golines -w .
       - govulncheck ./...
-      - go test -cover ./...
+      - go test -race -count=1 -cover ./...
       - golangci-lint run
 
   coverage:
