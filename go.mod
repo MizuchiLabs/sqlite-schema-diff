@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/mizuchilabs/kata v0.1.3
 	github.com/urfave/cli/v3 v3.11.0
-	modernc.org/sqlite v1.57.0
+	modernc.org/sqlite v1.58.0
 )
 
 require (
