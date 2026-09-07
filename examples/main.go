@@ -8,9 +8,10 @@ import (
 	"log"
 	"os"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
-	_ "modernc.org/sqlite"
 )
 
 const (

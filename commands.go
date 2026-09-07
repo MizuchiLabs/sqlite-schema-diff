@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/urfave/cli/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
-	"github.com/urfave/cli/v3"
-	_ "modernc.org/sqlite"
 )
 
 var commands = []*cli.Command{diffCMD, applyCMD, dumpCMD}

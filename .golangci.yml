@@ -12,7 +12,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/nokku-sh/nokku
+        - github.com/mizuchilabs/sqlite-schema-diff
     golines:
       max-len: 120
 
