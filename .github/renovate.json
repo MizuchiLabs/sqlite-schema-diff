@@ -5,14 +5,14 @@
   "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
   "packageRules": [
     {
-      "matchPackagePatterns": ["*"],
+      "matchPackageNames": ["*"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "non-major dependencies",
       "automerge": true,
       "automergeType": "branch"
     },
     {
-      "matchPackagePatterns": ["*"],
+      "matchPackageNames": ["*"],
       "matchUpdateTypes": ["major"],
       "automerge": false
     }
