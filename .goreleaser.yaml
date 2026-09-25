@@ -60,6 +60,18 @@ sboms:
     args: ["$artifact", "--output", "cyclonedx-json=$document"]
     artifacts: binary
 
+nfpms:
+  - vendor: "MizuchiLabs"
+    homepage: "https://github.com/mizuchilabs/sqlite-schema-diff"
+    description: "Diff based migrations for sqlite"
+    maintainer: "MizuchiLabs <support@mizuchi.dev>"
+    license: Apache-2.0
+    bindir: /usr/bin
+    formats:
+      - apk
+      - deb
+      - rpm
+
 source:
   enabled: true
 
