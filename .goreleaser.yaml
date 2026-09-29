@@ -3,14 +3,6 @@ version: 2
 project_name: sqlite-schema-diff
 report_sizes: true
 
-before:
-  hooks:
-    - go fmt ./...
-    - go vet ./...
-    - go test ./...
-    - go mod download
-    - go mod verify
-
 gomod:
   proxy: true
 
@@ -36,12 +28,6 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
-
-upx:
-  - enabled: true
-    lzma: true
-    compress: best
-    goos: [linux]
 
 signs:
   - cmd: cosign
