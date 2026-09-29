@@ -2,6 +2,7 @@ package diff
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestCompare_InvalidSchemaDir(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	defer func() { _ = db.Close() }()
 
-	_, err := Compare(t.Context(), db, "/nonexistent/schema/dir")
+	_, err := Compare(t.Context(), db, os.DirFS("/nonexistent/schema/dir"))
 	if err == nil {
 		t.Error("expected error for invalid schema dir")
 	}

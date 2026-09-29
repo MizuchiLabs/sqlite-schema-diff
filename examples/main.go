@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/diff"
-	"github.com/mizuchilabs/sqlite-schema-diff/pkg/parser"
 )
 
 const (
@@ -55,7 +55,7 @@ func run(ctx context.Context) error {
 }
 
 func generateMigrationSQL(ctx context.Context, db *sql.DB) error {
-	changes, err := diff.Compare(ctx, db, schemaPath)
+	changes, err := diff.Compare(ctx, db, os.DirFS(schemaPath))
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func generateMigrationSQL(ctx context.Context, db *sql.DB) error {
 }
 
 func checkDestructiveChanges(ctx context.Context, db *sql.DB) error {
-	changes, err := diff.Compare(ctx, db, schemaPath)
+	changes, err := diff.Compare(ctx, db, os.DirFS(schemaPath))
 	if err != nil {
 		return err
 	}
@@ -98,14 +98,12 @@ func checkDestructiveChanges(ctx context.Context, db *sql.DB) error {
 }
 
 func apply(ctx context.Context, db *sql.DB) error {
-	// Apply changes with options
 	opts := diff.ApplyOptions{
-		DryRun:          false,
 		SkipDestructive: false,
 		BackupPath:      dbPath + ".backup",
 	}
 
-	if err := diff.Apply(ctx, db, schemaPath, opts); err != nil {
+	if _, err := diff.Apply(ctx, db, os.DirFS(schemaPath), opts); err != nil {
 		return fmt.Errorf("apply changes: %w", err)
 	}
 
@@ -114,16 +112,17 @@ func apply(ctx context.Context, db *sql.DB) error {
 }
 
 func applyEmbedded(ctx context.Context, db *sql.DB) error {
-	parser.SetBaseFS(schemaFS)
+	fsys, err := fs.Sub(schemaFS, schemaPath)
+	if err != nil {
+		return err
+	}
 
-	// Apply changes with options
 	opts := diff.ApplyOptions{
-		DryRun:          false,
 		SkipDestructive: false,
 		BackupPath:      dbPath + ".backup",
 	}
 
-	if err := diff.Apply(ctx, db, schemaPath, opts); err != nil {
+	if _, err := diff.Apply(ctx, db, fsys, opts); err != nil {
 		return fmt.Errorf("apply changes: %w", err)
 	}
 

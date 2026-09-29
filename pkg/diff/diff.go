@@ -39,6 +39,10 @@ type Change struct {
 	Description string   // Human-readable description
 	SQL         []string // SQL statements to apply
 	Destructive bool     // Whether this change may lose data
+
+	// table is the table or view this change depends on. Skipping a
+	// destructive change to it must skip this change too.
+	table string
 }
 
 // Diff compares two schemas and returns the changes.
@@ -49,10 +53,18 @@ func Diff(from, to *schema.Database) []Change {
 	// and need to be recreated as part of the table recreation
 	recreatedTables := make(map[string]bool)
 
-	tableChanges := diffTables(from, to, recreatedTables)
-	changes = append(changes, tableChanges...)
+	changes = append(changes, diffTables(from, to, recreatedTables)...)
 	changes = append(changes, diffIndexes(from, to, recreatedTables)...)
-	changes = append(changes, diffViews(from, to)...)
+
+	// DROP VIEW also drops the view's INSTEAD OF triggers, so a dropped or
+	// changed view needs its triggers recreated like a recreated table.
+	viewChanges := diffViews(from, to)
+	for _, c := range viewChanges {
+		if c.Type == DropView {
+			recreatedTables[c.Object] = true
+		}
+	}
+	changes = append(changes, viewChanges...)
 	changes = append(changes, diffTriggers(from, to, recreatedTables)...)
 
 	sortChanges(changes)
@@ -65,13 +77,13 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 	// Tables that were dropped or renamed by letter case only. SQLite table
 	// names are case-insensitive, so "users" -> "USERS" must become a
 	// rename; dropping and recreating would lose all data.
-	renamed := map[string]string{} // old name -> new name
-	for name := range from.Tables {
+	renamedTo := map[string]string{} // new name -> old name
+	for name, table := range from.Tables {
 		if _, exists := to.Tables[name]; exists {
 			continue
 		}
 		newName := caseOnlyRename(to.Tables, name)
-		if newName == "" {
+		if newName == "" || isVirtual(table) {
 			changes = append(changes, Change{
 				Type:        DropTable,
 				Object:      name,
@@ -81,9 +93,9 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 			})
 			continue
 		}
-		renamed[name] = newName
+		renamedTo[newName] = name
 		// The rename copies data to the new name and drops the old table,
-		// which also drops its indexes and triggers; mark the table so
+		// which also drops its indexes and triggers. Mark the table so
 		// those are recreated.
 		recreatedTables[name] = true
 		recreatedTables[newName] = true
@@ -91,16 +103,16 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 			Type:        RenameTable,
 			Object:      name,
 			Description: fmt.Sprintf("Rename table %q to %q", name, newName),
-			SQL:         generateCaseRenameSQL(from.Tables[name], to.Tables[newName]),
+			// SQLite refuses CREATE and ALTER TABLE RENAME to a name that
+			// differs only in case, so the rename goes through a copy.
+			SQL: generateRecreateSQL(name, newName, table, to.Tables[newName]),
 		})
 	}
 
 	// New tables (skip rename targets, they already exist under another name)
 	for name, table := range to.Tables {
-		if isRenameTarget(renamed, name) {
-			continue
-		}
-		if _, exists := from.Tables[name]; !exists {
+		_, isRenamed := renamedTo[name]
+		if _, exists := from.Tables[name]; !exists && !isRenamed {
 			changes = append(changes, Change{
 				Type:        CreateTable,
 				Object:      name,
@@ -115,11 +127,11 @@ func diffTables(from, to *schema.Database, recreatedTables map[string]bool) []Ch
 	for name, toTable := range to.Tables {
 		fromTable, exists := from.Tables[name]
 		if !exists {
-			orig, ok := renameSource(renamed, name)
+			orig, ok := renamedTo[name]
 			if !ok {
 				continue
 			}
-			// Operate under the new name; the rename already ran.
+			// Operate under the new name, the rename already ran.
 			adjusted := *from.Tables[orig]
 			adjusted.Name = name
 			fromTable = &adjusted
@@ -152,34 +164,26 @@ func caseOnlyRename(tables map[string]*schema.Table, name string) string {
 	return match
 }
 
-// generateCaseRenameSQL builds the statements that rename a table by
-// copying it through a temporary table. SQLite resolves table names
-// case-insensitively, so it refuses both CREATE under the new name and
-// ALTER TABLE RENAME to a name that differs only in letter case.
-func generateCaseRenameSQL(from, to *schema.Table) []string {
-	return generateRecreateSQLTo(from.Name, to.Name, from, to)
-}
-
-func isRenameTarget(renamed map[string]string, name string) bool {
-	for _, to := range renamed {
-		if to == name {
-			return true
-		}
-	}
-	return false
-}
-
-func renameSource(renamed map[string]string, name string) (string, bool) {
-	for from, to := range renamed {
-		if to == name {
-			return from, true
-		}
-	}
-	return "", false
-}
-
 func diffTableColumns(from, to *schema.Table) []Change {
 	var changes []Change
+
+	// Virtual tables support no ALTER TABLE at all. They are dropped and
+	// created again, their content (like an FTS index) is not copied.
+	if isVirtual(from) || isVirtual(to) {
+		if normalizeSQL(from.SQL) == normalizeSQL(to.SQL) {
+			return nil
+		}
+		return []Change{{
+			Type:        RecreateTable,
+			Object:      from.Name,
+			Description: fmt.Sprintf("Recreate virtual table %q (content is not kept)", from.Name),
+			SQL: []string{
+				fmt.Sprintf("DROP TABLE %s;", schema.QuoteIdentifier(from.Name)),
+				ensureSemicolon(to.SQL),
+			},
+			Destructive: true,
+		}}
+	}
 
 	var droppedCols []schema.Column
 	for _, col := range from.Columns {
@@ -211,12 +215,15 @@ func diffTableColumns(from, to *schema.Table) []Change {
 			re := regexp.MustCompile(`\b` + oldNameLower + `\b`)
 			fromNormRenamed := re.ReplaceAllString(fromNorm, strings.ToLower(newCol.Name))
 
+			// A drop plus an add of a matching column is indistinguishable
+			// from a rename. Guess rename to keep the data, but mark it
+			// destructive so it needs confirmation.
 			if fromNormRenamed == toNorm {
 				return []Change{{
 					Type:   RenameColumn,
 					Object: from.Name,
 					Description: fmt.Sprintf(
-						"Rename column %q to %q on table %q",
+						"Rename column %q to %q on table %q (guessed from drop + add, confirm it is a rename)",
 						oldCol.Name,
 						newCol.Name,
 						from.Name,
@@ -229,7 +236,7 @@ func diffTableColumns(from, to *schema.Table) []Change {
 							schema.QuoteIdentifier(newCol.Name),
 						),
 					},
-					Destructive: false,
+					Destructive: true,
 				}}
 			}
 		}
@@ -369,6 +376,7 @@ func simulatedTableMatches(from, to *schema.Table, newCols []schema.Column) bool
 	if err != nil {
 		return false
 	}
+	db.SetMaxOpenConns(1) // every ":memory:" connection is its own database
 	defer func() {
 		_ = db.Close()
 	}()
@@ -455,15 +463,11 @@ func generateAddColumnSQL(tableName string, col schema.Column) string {
 		fmt.Fprintf(&sb, " %s", col.Type)
 	}
 
+	// canAddColumns guarantees a NOT NULL column has a default.
 	if col.NotNull {
-		if col.Default != nil {
-			fmt.Fprintf(&sb, " NOT NULL DEFAULT %s", *col.Default)
-		} else {
-			// SQLite requires a DEFAULT for NOT NULL columns added via
-			// ALTER TABLE, so fall back to a type-appropriate value.
-			fmt.Fprintf(&sb, " NOT NULL DEFAULT %s", defaultForType(col.Type))
-		}
-	} else if col.Default != nil {
+		sb.WriteString(" NOT NULL")
+	}
+	if col.Default != nil {
 		fmt.Fprintf(&sb, " DEFAULT %s", *col.Default)
 	}
 
@@ -490,20 +494,22 @@ func recreateTableChange(name string, from, to *schema.Table) Change {
 		Type:        RecreateTable,
 		Object:      name,
 		Description: fmt.Sprintf("Recreate table %q (schema changed)", name),
-		SQL:         generateRecreateSQL(name, from, to),
+		SQL:         generateRecreateSQL(name, name, from, to),
 		Destructive: true,
 	}
 }
 
-func generateRecreateSQL(name string, from, to *schema.Table) []string {
-	return generateRecreateSQLTo(name, name, from, to)
+// isVirtual reports whether t was created with CREATE VIRTUAL TABLE.
+func isVirtual(t *schema.Table) bool {
+	f := strings.Fields(strings.ToUpper(t.SQL))
+	return len(f) > 1 && f[0] == "CREATE" && f[1] == "VIRTUAL"
 }
 
-// generateRecreateSQLTo builds the statements that recreate the table under
+// generateRecreateSQL builds the statements that recreate the table under
 // finalName, copying the data from its current name. A temporary table is
 // used because SQLite resolves table names case-insensitively: the new
 // table must not exist while the old one is still there.
-func generateRecreateSQLTo(name, finalName string, from, to *schema.Table) []string {
+func generateRecreateSQL(name, finalName string, from, to *schema.Table) []string {
 	tempName := name + "__new"
 
 	// Build the data migration in one pass so the INSERT column list and
@@ -610,31 +616,33 @@ func diffNamed[T any](
 
 	// Dropped objects
 	for name, obj := range from {
-		if recreatedTables[tableOf(obj)] {
+		table := tableOf(obj)
+		if recreatedTables[table] {
 			if dropOnRecreate {
-				changes = append(changes, dropChange(dropType, name, "(will recreate)"))
+				changes = append(changes, dropChange(dropType, name, table, "(will recreate)"))
 			}
 			continue
 		}
 		if _, exists := to[name]; !exists {
-			changes = append(changes, dropChange(dropType, name, ""))
+			changes = append(changes, dropChange(dropType, name, table, ""))
 		}
 	}
 
 	// New or modified objects
 	for name, obj := range to {
-		if recreatedTables[tableOf(obj)] {
-			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+		table := tableOf(obj)
+		if recreatedTables[table] {
+			changes = append(changes, createChange(createType, name, table, sqlOf(obj)))
 			continue
 		}
 
 		prev, exists := from[name]
 		switch {
 		case !exists:
-			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+			changes = append(changes, createChange(createType, name, table, sqlOf(obj)))
 		case normalizeSQL(sqlOf(prev)) != normalizeSQL(sqlOf(obj)):
-			changes = append(changes, dropChange(dropType, name, "(will recreate)"))
-			changes = append(changes, createChange(createType, name, sqlOf(obj)))
+			changes = append(changes, dropChange(dropType, name, table, "(will recreate)"))
+			changes = append(changes, createChange(createType, name, table, sqlOf(obj)))
 		}
 	}
 
@@ -659,16 +667,17 @@ func objectKind(t ChangeType) string {
 	}
 }
 
-func createChange(t ChangeType, name, objectSQL string) Change {
+func createChange(t ChangeType, name, table, objectSQL string) Change {
 	return Change{
 		Type:        t,
 		Object:      name,
 		Description: fmt.Sprintf("Create %s %q", objectKind(t), name),
 		SQL:         []string{ensureSemicolon(objectSQL)},
+		table:       table,
 	}
 }
 
-func dropChange(t ChangeType, name, suffix string) Change {
+func dropChange(t ChangeType, name, table, suffix string) Change {
 	description := fmt.Sprintf("Drop %s %q", objectKind(t), name)
 	if suffix != "" {
 		description += " " + suffix
@@ -684,6 +693,7 @@ func dropChange(t ChangeType, name, suffix string) Change {
 				schema.QuoteIdentifier(name),
 			),
 		},
+		table: table,
 	}
 }
 
@@ -752,6 +762,26 @@ func sortChanges(changes []Change) {
 		}
 		return cmp.Compare(a.Object, b.Object)
 	})
+}
+
+// WithoutDestructive returns changes minus the destructive ones. Changes
+// that depend on a skipped table change, such as recreating the indexes of
+// a table whose recreation is skipped, are left out as well.
+func WithoutDestructive(changes []Change) []Change {
+	skipped := map[string]bool{}
+	for _, c := range changes {
+		if c.Destructive {
+			skipped[c.Object] = true
+		}
+	}
+
+	var kept []Change
+	for _, c := range changes {
+		if !c.Destructive && (c.table == "" || !skipped[c.table]) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
 }
 
 // HasDestructive returns true if any changes are destructive.

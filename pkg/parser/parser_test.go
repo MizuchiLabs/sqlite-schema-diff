@@ -2,6 +2,8 @@ package parser
 
 import (
 	"database/sql"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -213,7 +215,7 @@ func TestFromDirectory(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +245,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +258,7 @@ func TestFromDirectory_Nested(t *testing.T) {
 func TestFromDirectory_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +269,7 @@ func TestFromDirectory_Empty(t *testing.T) {
 }
 
 func TestFromDirectory_NonExistent(t *testing.T) {
-	_, err := ReadFiles(t.Context(), "/nonexistent/path")
+	_, err := ReadFiles(t.Context(), os.DirFS("/nonexistent/path"))
 	if err == nil {
 		t.Error("expected error for non-existent directory")
 	}
@@ -280,7 +282,7 @@ func TestFromDirectory_InvalidSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := ReadFiles(t.Context(), tmpDir)
+	_, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err == nil {
 		t.Error("expected error for invalid SQL")
 	}
@@ -312,7 +314,7 @@ func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -351,7 +353,7 @@ func openAndExec(path, sqlStr string) (*sql.DB, error) {
 	return db, err
 }
 
-func TestReadFiles_WithBaseFS(t *testing.T) {
+func TestReadFiles_FS(t *testing.T) {
 	// Create a mock filesystem using fstest.MapFS
 	mockFS := fstest.MapFS{
 		"schema/01_users.sql": &fstest.MapFile{
@@ -367,13 +369,13 @@ func TestReadFiles_WithBaseFS(t *testing.T) {
 		},
 	}
 
-	// Set the base FS
-	SetBaseFS(mockFS)
-	defer SetBaseFS(nil) // Reset after test
-
-	db, err := ReadFiles(t.Context(), "schema")
+	sub, err := fs.Sub(mockFS, "schema")
 	if err != nil {
-		t.Fatalf("ReadFiles with baseFS failed: %v", err)
+		t.Fatal(err)
+	}
+	db, err := ReadFiles(t.Context(), sub)
+	if err != nil {
+		t.Fatalf("ReadFiles with fs failed: %v", err)
 	}
 
 	if len(db.Tables) != 2 {
@@ -390,7 +392,7 @@ func TestReadFiles_WithBaseFS(t *testing.T) {
 	}
 }
 
-func TestReadFiles_BaseFS_NestedDirs(t *testing.T) {
+func TestReadFiles_FSNestedDirs(t *testing.T) {
 	mockFS := fstest.MapFS{
 		"db/migrations/001.sql": &fstest.MapFile{
 			Data: []byte(`CREATE TABLE a (id INTEGER);`),
@@ -400,10 +402,11 @@ func TestReadFiles_BaseFS_NestedDirs(t *testing.T) {
 		},
 	}
 
-	SetBaseFS(mockFS)
-	defer SetBaseFS(nil)
-
-	db, err := ReadFiles(t.Context(), "db/migrations")
+	sub, err := fs.Sub(mockFS, "db/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := ReadFiles(t.Context(), sub)
 	if err != nil {
 		t.Fatalf("ReadFiles with nested dirs failed: %v", err)
 	}
@@ -413,15 +416,16 @@ func TestReadFiles_BaseFS_NestedDirs(t *testing.T) {
 	}
 }
 
-func TestReadFiles_BaseFS_NonExistent(t *testing.T) {
+func TestReadFiles_FSNonExistent(t *testing.T) {
 	mockFS := fstest.MapFS{}
 
-	SetBaseFS(mockFS)
-	defer SetBaseFS(nil)
-
-	_, err := ReadFiles(t.Context(), "nonexistent")
+	sub, err := fs.Sub(mockFS, "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadFiles(t.Context(), sub)
 	if err == nil {
-		t.Error("expected error for non-existent directory in baseFS")
+		t.Error("expected error for non-existent directory in fs")
 	}
 }
 
@@ -504,7 +508,7 @@ func TestFromDirectory_WithSchemaQualifiers(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatalf("ReadFiles() with schema qualifiers failed: %v", err)
 	}
@@ -545,7 +549,7 @@ func TestFromDirectory_IndexBeforeTable(t *testing.T) {
 		}
 	}
 
-	db, err := ReadFiles(t.Context(), tmpDir)
+	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
 	if err != nil {
 		t.Fatalf("ReadFiles() with index before table failed: %v", err)
 	}
@@ -727,5 +731,25 @@ func TestFromSQL_BlankAndCommentOnly(t *testing.T) {
 		if len(db.Tables)+len(db.Views)+len(db.Triggers) != 0 {
 			t.Errorf("FromSQL(%q) should produce an empty schema", sql)
 		}
+	}
+}
+
+func TestParseStatements_TriggerWithExtraWhitespace(t *testing.T) {
+	stmts := parseStatements(
+		"CREATE\n  TRIGGER t AFTER INSERT ON a\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND;\nCREATE TABLE b (id INT);",
+		"x.sql",
+	)
+	if len(stmts) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %+v", len(stmts), stmts)
+	}
+}
+
+func TestFromSQL_SkipsShadowTables(t *testing.T) {
+	db, err := FromSQL(t.Context(), `CREATE VIRTUAL TABLE f USING fts5(body);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Tables) != 1 || db.Tables["f"] == nil {
+		t.Fatalf("expected only the virtual table, got %v", slices.Collect(maps.Keys(db.Tables)))
 	}
 }

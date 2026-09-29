@@ -2,6 +2,8 @@ package diff
 
 import (
 	"database/sql"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,37 +18,9 @@ func TestApply_NoChanges(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestApply_DryRun(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-	schemaDir := createSchemaDir(
-		t,
-		"users.sql",
-		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
-	)
-
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{DryRun: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify no changes were made - open fresh connection to check
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-
-	var count int
-	if err := checkDB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users')").
-		Scan(&count); err != nil {
-		t.Fatalf("count columns: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("expected 1 column, got %d", count)
 	}
 }
 
@@ -59,7 +33,7 @@ func TestApply_AddColumn(t *testing.T) {
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
 	)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +58,7 @@ func TestApply_SkipDestructive(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +85,7 @@ func TestApply_Backup(t *testing.T) {
 	)
 
 	backupPath := dbPath + ".backup"
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +128,7 @@ func createTestDBWithPath(t *testing.T, schema string) (*sql.DB, string) {
 	return db, dbPath
 }
 
-func createSchemaDir(t *testing.T, filename, content string) string {
+func createSchemaDir(t *testing.T, filename, content string) fs.FS {
 	t.Helper()
 	tmpDir := t.TempDir()
 
@@ -162,7 +136,7 @@ func createSchemaDir(t *testing.T, filename, content string) string {
 		t.Fatalf("write schema file: %v", err)
 	}
 
-	return tmpDir
+	return os.DirFS(tmpDir)
 }
 
 func TestApply_SkipDestructiveAllFiltered(t *testing.T) {
@@ -176,7 +150,7 @@ func TestApply_SkipDestructiveAllFiltered(t *testing.T) {
 	// Only keep users table - dropping posts is destructive
 	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,7 +174,7 @@ func TestApply_InvalidSchemaDir(t *testing.T) {
 	db, _ := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	defer func() { _ = db.Close() }()
 
-	err := Apply(t.Context(), db, "/nonexistent/schema/dir", ApplyOptions{})
+	_, err := Apply(t.Context(), db, os.DirFS("/nonexistent/schema/dir"), ApplyOptions{})
 	if err == nil {
 		t.Error("expected error for invalid schema dir")
 	}
@@ -216,7 +190,7 @@ func TestApply_NoBackupWhenEmpty(t *testing.T) {
 	)
 
 	// Empty BackupPath means no backup
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: ""})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: ""})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +219,7 @@ func TestApply_ConvergesInOneApply(t *testing.T) {
 		);`,
 	)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -305,7 +279,7 @@ func TestApply_WaitsForConcurrentWriter(t *testing.T) {
 		_ = tx.Rollback()
 	}()
 
-	err = Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err = Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	<-released
 	if err != nil {
 		t.Fatalf("apply should wait for the concurrent writer, got: %v", err)
@@ -331,7 +305,7 @@ func TestApply_FKViolationRollsBack(t *testing.T) {
 		`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
 	)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	if err == nil {
 		t.Fatal("expected FK violation error, got nil")
 	}
@@ -361,7 +335,7 @@ func TestApply_QuotedIdentifierNames(t *testing.T) {
 		`CREATE TABLE "user ""admin""" (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'a;b');`,
 	)
 
-	err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -372,5 +346,165 @@ func TestApply_QuotedIdentifierNames(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("expected convergence, got %+v", changes)
+	}
+}
+
+// applyVersions applies v1 to a fresh database, then v2 with opts, and
+// returns the database and the changes still left after that.
+func applyVersions(t *testing.T, v1, v2 string, opts ApplyOptions) (*sql.DB, []Change) {
+	t.Helper()
+	db, _ := createTestDBWithPath(t, v1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	schemaDir := createSchemaDir(t, "schema.sql", v2)
+	if _, err := Apply(t.Context(), db, schemaDir, opts); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	changes, err := Compare(t.Context(), db, schemaDir)
+	if err != nil {
+		t.Fatalf("re-compare: %v", err)
+	}
+	return db, changes
+}
+
+func TestApply_ViewOnRecreatedTable(t *testing.T) {
+	_, left := applyVersions(t,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT, y TEXT);
+		CREATE VIEW v AS SELECT id, x FROM a;`,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);
+		CREATE VIEW v AS SELECT id, x FROM a;`,
+		ApplyOptions{},
+	)
+	if len(left) != 0 {
+		t.Fatalf("expected convergence, got %+v", left)
+	}
+}
+
+func TestApply_TriggerReferencingRecreatedTable(t *testing.T) {
+	_, left := applyVersions(t,
+		`CREATE TABLE log (id INTEGER PRIMARY KEY, n INT, z TEXT);
+		CREATE TABLE a (id INTEGER PRIMARY KEY);
+		CREATE TRIGGER t AFTER INSERT ON a BEGIN INSERT INTO log(n) VALUES (new.id); END;`,
+		`CREATE TABLE log (id INTEGER PRIMARY KEY, n INT);
+		CREATE TABLE a (id INTEGER PRIMARY KEY);
+		CREATE TRIGGER t AFTER INSERT ON a BEGIN INSERT INTO log(n) VALUES (new.id); END;`,
+		ApplyOptions{},
+	)
+	if len(left) != 0 {
+		t.Fatalf("expected convergence, got %+v", left)
+	}
+}
+
+func TestApply_SkipDestructiveKeepsIndexesOfSkippedTable(t *testing.T) {
+	db, left := applyVersions(t,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT, y TEXT);
+		CREATE INDEX ix ON a(x);`,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);
+		CREATE INDEX ix ON a(x);
+		CREATE TABLE b (id INTEGER PRIMARY KEY);`,
+		ApplyOptions{SkipDestructive: true},
+	)
+
+	if safe := WithoutDestructive(left); len(safe) != 0 {
+		t.Fatalf("expected only the skipped recreation to remain, got %+v", safe)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('ix', 'b')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("expected index ix kept and table b created, got %d of 2", n)
+	}
+}
+
+func TestApply_SkipDestructiveSkipsGuessedRename(t *testing.T) {
+	db, left := applyVersions(t,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, old_name TEXT);
+		CREATE INDEX ix ON a(old_name);`,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY, new_name TEXT);
+		CREATE INDEX ix ON a(new_name);`,
+		ApplyOptions{SkipDestructive: true},
+	)
+
+	if safe := WithoutDestructive(left); len(safe) != 0 {
+		t.Fatalf("expected only the skipped rename to remain, got %+v", safe)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('a') WHERE name = 'old_name'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Error("column was renamed despite SkipDestructive")
+	}
+}
+
+func TestApply_VirtualTable(t *testing.T) {
+	_, left := applyVersions(t,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY);`,
+		`CREATE TABLE a (id INTEGER PRIMARY KEY);
+		CREATE VIRTUAL TABLE f USING fts5(body);`,
+		ApplyOptions{},
+	)
+	if len(left) != 0 {
+		t.Fatalf("expected convergence after create, got %+v", left)
+	}
+
+	_, left = applyVersions(t,
+		`CREATE VIRTUAL TABLE f USING fts5(body);`,
+		`CREATE VIRTUAL TABLE f USING fts5(title, body);`,
+		ApplyOptions{},
+	)
+	if len(left) != 0 {
+		t.Fatalf("expected convergence after change, got %+v", left)
+	}
+}
+
+func TestApply_InsteadOfTriggerSurvivesViewChange(t *testing.T) {
+	const s = `CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);
+		CREATE VIEW v AS SELECT %s FROM a;
+		CREATE TRIGGER vt INSTEAD OF INSERT ON v BEGIN INSERT INTO a(id) VALUES (new.id); END;`
+	_, left := applyVersions(t, fmt.Sprintf(s, "id"), fmt.Sprintf(s, "id, x"), ApplyOptions{})
+	if len(left) != 0 {
+		t.Fatalf("expected convergence, got %+v", left)
+	}
+}
+
+func TestApply_CommentOnlyChangeIsNoop(t *testing.T) {
+	db, _ := createTestDBWithPath(t, "CREATE TABLE a (\n id INTEGER PRIMARY KEY -- the id\n);")
+	defer func() { _ = db.Close() }()
+	schemaDir := createSchemaDir(t, "a.sql", "CREATE TABLE a (\n id INTEGER PRIMARY KEY -- primary key\n);")
+
+	changes, err := Compare(t.Context(), db, schemaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected no changes for a comment edit, got %+v", changes)
+	}
+}
+
+func TestApply_BackupKeptWhenNewBackupFails(t *testing.T) {
+	db, dbPath := createTestDBWithPath(t, `CREATE TABLE a (id INTEGER PRIMARY KEY);`)
+	defer func() { _ = db.Close() }()
+	schemaDir := createSchemaDir(t, "a.sql", `CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);`)
+
+	backupPath := dbPath + ".backup"
+	if err := os.WriteFile(backupPath, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the temp path makes VACUUM INTO fail.
+	if err := os.Mkdir(backupPath+".tmp", 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupPath+".tmp", "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath}); err == nil {
+		t.Fatal("expected backup error")
+	}
+	if b, _ := os.ReadFile(backupPath); string(b) != "old" {
+		t.Error("previous backup was destroyed by a failed backup")
 	}
 }

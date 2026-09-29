@@ -6,9 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"os"
-	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -19,8 +16,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var baseFS fs.FS
-
 // schemaQualifierRe matches schema qualifiers such as "main." in SQL code.
 var schemaQualifierRe = regexp.MustCompile(`\bmain\s*\.\s*`)
 
@@ -30,19 +25,6 @@ type sqlStatement struct {
 	fileName string
 }
 
-// SetBaseFS sets the base filesystem for reading schema files.
-// Use an [embed.FS] to read from embedded files.
-// Pass nil to revert to the OS filesystem.
-func SetBaseFS(fsys fs.FS) {
-	baseFS = fsys
-}
-
-// BaseFS returns the filesystem used for reading schema files.
-// It returns nil when reading from the OS filesystem.
-func BaseFS() fs.FS {
-	return baseFS
-}
-
 // FromDB extracts the schema from an open database connection.
 func FromDB(ctx context.Context, db *sql.DB) (*schema.Database, error) {
 	return extractSchema(ctx, db)
@@ -50,9 +32,9 @@ func FromDB(ctx context.Context, db *sql.DB) (*schema.Database, error) {
 
 // FromSQL parses SQL by executing it against an in-memory SQLite database.
 func FromSQL(ctx context.Context, sqlContent string) (*schema.Database, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := openMemory()
 	if err != nil {
-		return nil, fmt.Errorf("create in-memory database: %w", err)
+		return nil, err
 	}
 	defer func() {
 		_ = db.Close()
@@ -68,40 +50,36 @@ func FromSQL(ctx context.Context, sqlContent string) (*schema.Database, error) {
 	return extractSchema(ctx, db)
 }
 
-// ReadFiles parses all .sql files in a directory into a schema.
-func ReadFiles(ctx context.Context, dir string) (*schema.Database, error) {
-	var err error
+// ReadFiles parses all .sql files in fsys, including subdirectories, into a
+// schema. Use [os.DirFS] for a directory on disk, or [fs.Sub] to point an
+// [embed.FS] at the schema directory.
+func ReadFiles(ctx context.Context, fsys fs.FS) (*schema.Database, error) {
 	var files []string
-	if baseFS != nil {
-		files, err = fromFS(baseFS, dir)
-	} else {
-		files, err = fromDir(dir)
+	if err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
+			return err
+		}
+		files = append(files, path)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
+	slices.Sort(files)
+
+	db, err := openMemory()
 	if err != nil {
 		return nil, err
 	}
-
-	// Create the in-memory database once
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		return nil, fmt.Errorf("create in-memory database: %w", err)
-	}
 	defer func() { _ = db.Close() }()
 
-	// Read all files first and categorize statements
+	// Tables run first so files can be ordered freely.
 	var tableStmts, otherStmts []sqlStatement
-
 	for _, file := range files {
-		content, err := readSchemaFile(file)
+		content, err := fs.ReadFile(fsys, file)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file, err)
 		}
-
-		// Strip schema qualifiers (e.g., "main.table_name" -> "table_name")
-		cleanedContent := stripSchemaQualifiers(string(content))
-
-		// Categorize statements: tables first, then everything else
-		for _, stmt := range parseStatements(cleanedContent, filepath.Base(file)) {
+		for _, stmt := range parseStatements(stripSchemaQualifiers(string(content)), file) {
 			if isTableStatement(stmt.sql) {
 				tableStmts = append(tableStmts, stmt)
 			} else {
@@ -110,7 +88,6 @@ func ReadFiles(ctx context.Context, dir string) (*schema.Database, error) {
 		}
 	}
 
-	// Execute tables first, then indexes/views/triggers
 	for _, stmt := range slices.Concat(tableStmts, otherStmts) {
 		if _, err := db.ExecContext(ctx, stmt.sql); err != nil {
 			return nil, fmt.Errorf("execute %s: %w", stmt.fileName, err)
@@ -120,48 +97,16 @@ func ReadFiles(ctx context.Context, dir string) (*schema.Database, error) {
 	return extractSchema(ctx, db)
 }
 
-func readSchemaFile(file string) ([]byte, error) {
-	if baseFS != nil {
-		return fs.ReadFile(baseFS, file)
+// openMemory opens an in-memory SQLite database. It is limited to a single
+// connection because every connection to ":memory:" is a separate, empty
+// database. Callers must close rows before running the next query.
+func openMemory() (*sql.DB, error) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("create in-memory database: %w", err)
 	}
-	return os.ReadFile(filepath.Clean(file))
-}
-
-// fromDir loads all .sql files from a directory.
-func fromDir(dir string) ([]string, error) {
-	var files []string
-	if err := filepath.WalkDir(
-		filepath.Clean(dir),
-		func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
-				return err
-			}
-			files = append(files, path)
-			return nil
-		},
-	); err != nil {
-		return nil, err
-	}
-
-	slices.Sort(files)
-	return files, nil
-}
-
-// fromFS loads all .sql files from an [fs.FS].
-func fromFS(fsys fs.FS, dir string) ([]string, error) {
-	var files []string
-	if err := fs.WalkDir(fsys, path.Clean(dir), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".sql") {
-			return err
-		}
-		files = append(files, path)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	slices.Sort(files)
-	return files, nil
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 // lexer scans SQL character by character and splits it into statements.
@@ -317,29 +262,20 @@ func (l *lexer) take() string {
 // a CREATE TRIGGER statement and ends with BEGIN, CASE, or END.
 func (l *lexer) trackTrigger() {
 	s := l.current.String()
-	upper := strings.ToUpper(stripLeadingComments(s))
-	isTrigger := strings.HasPrefix(upper, "CREATE TRIGGER") ||
-		strings.HasPrefix(upper, "CREATE TEMP TRIGGER") ||
-		strings.HasPrefix(upper, "CREATE TEMPORARY TRIGGER")
+	head := stripLeadingComments(s)
+	head = strings.ToUpper(strings.Join(strings.Fields(head[:min(len(head), 64)]), " "))
+	isTrigger := strings.HasPrefix(head, "CREATE TRIGGER") ||
+		strings.HasPrefix(head, "CREATE TEMP TRIGGER") ||
+		strings.HasPrefix(head, "CREATE TEMPORARY TRIGGER")
 	if !isTrigger {
 		return
 	}
 
-	lastWordStart := -1
-	for j := len(s) - 1; j >= 0; j-- {
-		if isBoundary(rune(s[j])) {
-			lastWordStart = j
-			break
-		}
-	}
-	switch strings.ToUpper(s[lastWordStart+1:]) {
+	switch strings.ToUpper(s[strings.LastIndexFunc(s, isBoundary)+1:]) {
 	case "BEGIN", "CASE":
 		l.triggerNest++
 	case "END":
-		l.triggerNest--
-		if l.triggerNest < 0 {
-			l.triggerNest = 0
-		}
+		l.triggerNest = max(l.triggerNest-1, 0)
 	}
 }
 
@@ -485,11 +421,13 @@ func extractSchema(ctx context.Context, db *sql.DB) (*schema.Database, error) {
 }
 
 func extractTables(ctx context.Context, db *sql.DB, s *schema.Database) error {
-	// First pass: collect all table names and SQL.
-	// We must close this query before running nested queries (driver limitation)
+	// Rows must be closed before the per-table queries, in-memory databases
+	// only have one connection. Shadow tables (FTS5 internals) belong to
+	// their virtual table and are left out.
 	rows, err := db.QueryContext(ctx, `
 		SELECT name, sql FROM sqlite_master
-		WHERE type='table' AND name NOT LIKE 'sqlite_%'
+		WHERE type='table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
+		AND name NOT IN (SELECT name FROM pragma_table_list WHERE schema='main' AND type='shadow')
 		ORDER BY name
 	`)
 	if err != nil {
@@ -692,7 +630,7 @@ func foreignKeyColumns(ctx context.Context, db *sql.DB, table string) ([]string,
 func extractIndexes(ctx context.Context, db *sql.DB, s *schema.Database) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT name, tbl_name, sql FROM sqlite_master
-		WHERE type='index' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+		WHERE type='index' AND sql IS NOT NULL
 		ORDER BY name
 	`)
 	if err != nil {
@@ -703,15 +641,11 @@ func extractIndexes(ctx context.Context, db *sql.DB, s *schema.Database) error {
 	}()
 
 	for rows.Next() {
-		var name, table string
-		var sqlText sql.NullString
+		var name, table, sqlText string
 		if err := rows.Scan(&name, &table, &sqlText); err != nil {
 			return err
 		}
-		if !sqlText.Valid {
-			continue
-		}
-		s.Indexes[name] = &schema.Index{Name: name, Table: table, SQL: sqlText.String}
+		s.Indexes[name] = &schema.Index{Name: name, Table: table, SQL: sqlText}
 	}
 
 	return rows.Err()

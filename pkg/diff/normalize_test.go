@@ -35,6 +35,16 @@ func TestNormalizeSQL(t *testing.T) {
 			input: `CREATE TABLE "MyTable" ([id] INT)`,
 			want:  `create table mytable(id int)`,
 		},
+		{
+			name:  "Strips comments",
+			input: "CREATE TABLE t (\n a INT, -- don't touch\n b TEXT /* note */\n)",
+			want:  "create table t(a int, b text)",
+		},
+		{
+			name:  "Keeps comment markers inside literals and identifiers",
+			input: `CREATE TABLE t (a TEXT DEFAULT '--x', "b--c" INT)`,
+			want:  "create table t(a text default '--x', b--c int)",
+		},
 	}
 
 	for _, tt := range tests {

@@ -723,16 +723,10 @@ func TestGenerateAddColumnSQL(t *testing.T) {
 			wantSQL: `ALTER TABLE "users" ADD COLUMN "active" INTEGER NOT NULL DEFAULT 1;`,
 		},
 		{
-			name:      "not null integer without default gets zero",
+			name:      "nullable with default",
 			tableName: "users",
-			col:       schema.Column{Name: "count", Type: "INTEGER", NotNull: true},
-			wantSQL:   `ALTER TABLE "users" ADD COLUMN "count" INTEGER NOT NULL DEFAULT 0;`,
-		},
-		{
-			name:      "not null text without default gets empty string",
-			tableName: "users",
-			col:       schema.Column{Name: "status", Type: "TEXT", NotNull: true},
-			wantSQL:   `ALTER TABLE "users" ADD COLUMN "status" TEXT NOT NULL DEFAULT '';`,
+			col:       schema.Column{Name: "status", Type: "TEXT", Default: new("'new'")},
+			wantSQL:   `ALTER TABLE "users" ADD COLUMN "status" TEXT DEFAULT 'new';`,
 		},
 	}
 
@@ -1105,7 +1099,7 @@ func TestGenerateRecreateSQL_FillsDefaultsForNewColumns(t *testing.T) {
 		SQL: `CREATE TABLE "users" (id INTEGER PRIMARY KEY, email TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, bio TEXT)`,
 	}
 
-	stmts := generateRecreateSQL("users", from, to)
+	stmts := generateRecreateSQL("users", "users", from, to)
 
 	insert := stmts[1]
 	if !strings.Contains(insert, `"email"`) || !strings.Contains(insert, "''") {

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 	_ "modernc.org/sqlite"
@@ -19,39 +22,39 @@ import (
 
 var commands = []*cli.Command{diffCMD, applyCMD, dumpCMD}
 
+var databaseFlag = &cli.StringFlag{
+	Name:     "database",
+	Aliases:  []string{"db"},
+	Usage:    "Path to SQLite database file",
+	Required: true,
+}
+
+var schemaFlag = &cli.StringFlag{
+	Name:    "schema",
+	Aliases: []string{"s"},
+	Value:   "schema",
+	Usage:   "Path to schema directory containing .sql files",
+}
+
 var diffCMD = &cli.Command{
 	Name:  "diff",
 	Usage: "Show schema differences between database and schema files",
 	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:     "database",
-			Aliases:  []string{"db"},
-			Usage:    "Path to SQLite database file",
-			Required: true,
-		},
-		&cli.StringFlag{
-			Name:    "schema",
-			Aliases: []string{"s"},
-			Value:   "schema",
-			Usage:   "Path to schema directory containing .sql files",
-		},
+		databaseFlag,
+		schemaFlag,
 		&cli.BoolFlag{
 			Name:  "sql",
 			Usage: "Output migration SQL instead of human-readable diff",
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		dbPath := cmd.String("database")
-		schemaDir := cmd.String("schema")
-		outputSQL := cmd.Bool("sql")
-
-		db, err := sql.Open("sqlite", dbPath)
+		db, err := openDB(cmd.String("database"), true)
 		if err != nil {
-			return fmt.Errorf("open database: %w", err)
+			return err
 		}
 		defer func() { _ = db.Close() }()
 
-		changes, err := diff.Compare(ctx, db, schemaDir)
+		changes, err := compare(ctx, db, cmd.String("schema"))
 		if err != nil {
 			return err
 		}
@@ -61,7 +64,7 @@ var diffCMD = &cli.Command{
 			return nil
 		}
 
-		if outputSQL {
+		if cmd.Bool("sql") {
 			fmt.Println(diff.GenerateSQL(changes))
 		} else {
 			showChanges(changes)
@@ -74,25 +77,15 @@ var applyCMD = &cli.Command{
 	Name:  "apply",
 	Usage: "Apply schema changes to database",
 	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:     "database",
-			Aliases:  []string{"db"},
-			Usage:    "Path to SQLite database file",
-			Required: true,
-		},
-		&cli.StringFlag{
-			Name:    "schema",
-			Aliases: []string{"s"},
-			Value:   "schema",
-			Usage:   "Path to schema directory containing .sql files",
-		},
+		databaseFlag,
+		schemaFlag,
 		&cli.BoolFlag{
 			Name:  "dry-run",
 			Usage: "Show what would be applied without making changes",
 		},
 		&cli.BoolFlag{
 			Name:  "skip-destructive",
-			Usage: "Skip destructive changes (drops, table recreations)",
+			Usage: "Skip destructive changes (drops, table recreations, column renames)",
 		},
 		&cli.BoolFlag{
 			Name:  "backup",
@@ -107,61 +100,60 @@ var applyCMD = &cli.Command{
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		dbPath := cmd.String("database")
-		schemaDir := cmd.String("schema")
-		dryRun := cmd.Bool("dry-run")
-		skipDestructive := cmd.Bool("skip-destructive")
-		backup := cmd.Bool("backup")
-		force := cmd.Bool("force")
 
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			return fmt.Errorf("open database: %w", err)
-		}
-		defer func() { _ = db.Close() }()
-
-		changes, err := diff.Compare(ctx, db, schemaDir)
+		// apply may create a new database, that is how a fresh one is set up.
+		db, err := openDB(dbPath, false)
 		if err != nil {
 			return err
 		}
+		defer func() { _ = db.Close() }()
 
+		changes, err := compare(ctx, db, cmd.String("schema"))
+		if err != nil {
+			return err
+		}
 		if len(changes) == 0 {
 			fmt.Println("No schema changes detected.")
 			return nil
 		}
 
+		if cmd.Bool("skip-destructive") {
+			all := len(changes)
+			changes = diff.WithoutDestructive(changes)
+			if skipped := all - len(changes); skipped > 0 {
+				fmt.Printf("Skipping %d change(s) that are destructive or depend on one.\n", skipped)
+			}
+			if len(changes) == 0 {
+				fmt.Println("Nothing left to apply.")
+				return nil
+			}
+		}
+
 		fmt.Println("Schema changes to be applied:")
 		showChanges(changes)
 
-		// Confirm destructive changes
-		if diff.HasDestructive(changes) && !force && !dryRun {
-			fmt.Print("\nWARNING: Destructive changes detected. Continue? (yes/no): ")
-			var response string
-			if _, err := fmt.Scanln(&response); err != nil {
+		if cmd.Bool("dry-run") {
+			fmt.Println("\nDry run - no changes applied.")
+			return nil
+		}
+
+		if diff.HasDestructive(changes) && !cmd.Bool("force") {
+			ok, err := confirm("\nWARNING: Destructive changes detected. Continue? (yes/no): ")
+			if err != nil {
 				return err
 			}
-			if response != "yes" && response != "y" {
+			if !ok {
 				fmt.Println("Aborted.")
 				return nil
 			}
 		}
 
-		if dryRun {
-			fmt.Println("\nDry run - no changes applied.")
-			return nil
-		}
-
 		backupPath := ""
-		if backup {
+		if cmd.Bool("backup") {
 			backupPath = dbPath + ".backup"
 		}
 
-		opts := diff.ApplyOptions{
-			DryRun:          dryRun,
-			SkipDestructive: skipDestructive,
-			BackupPath:      backupPath,
-		}
-
-		if err := diff.Apply(ctx, db, schemaDir, opts); err != nil {
+		if err := diff.ApplyChanges(ctx, db, changes, backupPath); err != nil {
 			return fmt.Errorf("apply changes: %w", err)
 		}
 
@@ -174,12 +166,7 @@ var dumpCMD = &cli.Command{
 	Name:  "dump",
 	Usage: "Dump database schema to files",
 	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name:     "database",
-			Aliases:  []string{"db"},
-			Usage:    "Path to SQLite database file",
-			Required: true,
-		},
+		databaseFlag,
 		&cli.StringFlag{
 			Name:    "output",
 			Aliases: []string{"o"},
@@ -188,33 +175,60 @@ var dumpCMD = &cli.Command{
 		},
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		dbPath := cmd.String("database")
-		outputDir := cmd.String("output")
-
-		db, err := sql.Open("sqlite", dbPath)
+		db, err := openDB(cmd.String("database"), true)
 		if err != nil {
-			return fmt.Errorf("open database: %w", err)
+			return err
 		}
 		defer func() { _ = db.Close() }()
 
-		return dumpSchema(ctx, db, outputDir)
+		return dumpSchema(ctx, db, cmd.String("output"))
 	},
 }
 
+// openDB opens the database. With mustExist, a missing file is an error
+// instead of silently creating an empty database.
+func openDB(path string, mustExist bool) (*sql.DB, error) {
+	if mustExist {
+		if _, err := os.Stat(path); err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	return db, nil
+}
+
+func compare(ctx context.Context, db *sql.DB, schemaDir string) ([]diff.Change, error) {
+	changes, err := diff.Compare(ctx, db, os.DirFS(schemaDir))
+	if err != nil {
+		return nil, fmt.Errorf("schema %s: %w", schemaDir, err)
+	}
+	return changes, nil
+}
+
+func confirm(prompt string) (bool, error) {
+	fmt.Print(prompt)
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		return false, errors.New(
+			"no answer to the confirmation prompt, use --force to apply destructive changes without asking",
+		)
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "yes" || answer == "y", nil
+}
+
 func showChanges(changes []diff.Change) {
+	destructive := 0
 	for _, c := range changes {
 		symbol := "+"
 		if c.Destructive {
 			symbol = "-"
-		}
-		fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
-	}
-
-	destructive := 0
-	for _, c := range changes {
-		if c.Destructive {
 			destructive++
 		}
+		fmt.Printf("[%s] %s: %s\n", symbol, c.Type, c.Description)
 	}
 	fmt.Printf("\nTotal changes: %d (%d destructive)\n", len(changes), destructive)
 }

@@ -5,14 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 )
 
 // ApplyOptions configures how changes are applied.
 type ApplyOptions struct {
-	DryRun          bool
-	SkipDestructive bool
+	SkipDestructive bool   // Leave out destructive changes, see [WithoutDestructive]
 	BackupPath      string // Path to create backup (empty = no backup)
 }
 
@@ -21,38 +21,33 @@ type ApplyOptions struct {
 // migration wait briefly instead of failing with SQLITE_BUSY immediately.
 const defaultBusyTimeoutMS = 5000
 
-// Apply compares the database against a schema directory and applies the
-// resulting changes. Backup and migration run on a single connection inside
-// one transaction.
-func Apply(ctx context.Context, db *sql.DB, schemaDir string, opts ApplyOptions) error {
-	changes, err := Compare(ctx, db, schemaDir)
+// Apply compares the database against the .sql files in fsys and applies
+// the resulting changes. It returns the changes that were applied.
+func Apply(ctx context.Context, db *sql.DB, fsys fs.FS, opts ApplyOptions) ([]Change, error) {
+	changes, err := Compare(ctx, db, fsys)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	if opts.SkipDestructive {
+		changes = WithoutDestructive(changes)
+	}
+	if err := ApplyChanges(ctx, db, changes, opts.BackupPath); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
 
-	if opts.DryRun || len(changes) == 0 {
+// ApplyChanges applies changes, as returned by [Compare], to the database.
+// If backupPath is not empty, a backup is written there first. All changes
+// run on a single connection inside one transaction.
+func ApplyChanges(ctx context.Context, db *sql.DB, changes []Change, backupPath string) error {
+	if len(changes) == 0 {
 		return nil
 	}
 
-	// Filter out destructive if requested
-	if opts.SkipDestructive {
-		var filtered []Change
-		for _, c := range changes {
-			if !c.Destructive {
-				filtered = append(filtered, c)
-			}
-		}
-		changes = filtered
-		if len(changes) == 0 {
-			return nil
-		}
-	}
-
-	// All statements run on a single connection. A dedicated connection is
-	// required because PRAGMA foreign_keys and PRAGMA busy_timeout are
-	// per-connection settings, and the foreign_keys pragma is a no-op
-	// inside a transaction, so it must be toggled outside of the
-	// transaction on the same connection that runs the migration.
+	// A dedicated connection is required because the pragmas below are
+	// per-connection settings, and foreign_keys and legacy_alter_table must
+	// be set outside of the transaction on the connection that runs it.
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)
@@ -61,27 +56,16 @@ func Apply(ctx context.Context, db *sql.DB, schemaDir string, opts ApplyOptions)
 		_ = conn.Close()
 	}()
 
-	prevBusyTimeout, err := busyTimeoutMS(ctx, conn)
+	restoreBusy, err := setPragma(ctx, conn, "busy_timeout", defaultBusyTimeoutMS)
 	if err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(
-		ctx,
-		fmt.Sprintf("PRAGMA busy_timeout = %d", defaultBusyTimeoutMS),
-	); err != nil {
-		return fmt.Errorf("set busy timeout: %w", err)
-	}
-	defer func() {
-		_, _ = conn.ExecContext(
-			context.WithoutCancel(ctx),
-			fmt.Sprintf("PRAGMA busy_timeout = %d", prevBusyTimeout),
-		)
-	}()
+	defer restoreBusy()
 
-	// Create backup if path provided. VACUUM INTO cannot run inside a
-	// transaction, so it happens before the migration starts.
-	if opts.BackupPath != "" {
-		if err := createBackup(ctx, conn, opts.BackupPath); err != nil {
+	// VACUUM INTO cannot run inside a transaction, so the backup happens
+	// before the migration starts.
+	if backupPath != "" {
+		if err := createBackup(ctx, conn, backupPath); err != nil {
 			return err
 		}
 	}
@@ -89,29 +73,36 @@ func Apply(ctx context.Context, db *sql.DB, schemaDir string, opts ApplyOptions)
 	return migrate(ctx, conn, changes)
 }
 
+// createBackup writes to a temporary file first, so a failed backup never
+// destroys the previous one.
 func createBackup(ctx context.Context, conn *sql.Conn, backupPath string) error {
-	_ = os.Remove(backupPath)                             // Ignore error if doesn't exist
-	safePath := strings.ReplaceAll(backupPath, "'", "''") // Escape single quotes for SQL
+	tmpPath := backupPath + ".tmp"
+	_ = os.Remove(tmpPath)
+	safePath := strings.ReplaceAll(tmpPath, "'", "''")
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", safePath)); err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
+	if err := os.Rename(tmpPath, backupPath); err != nil {
 		return fmt.Errorf("create backup: %w", err)
 	}
 	return nil
 }
 
 func migrate(ctx context.Context, conn *sql.Conn, changes []Change) error {
-	foreignKeysOn, err := foreignKeysEnabled(ctx, conn)
+	restoreFK, err := setPragma(ctx, conn, "foreign_keys", 0)
 	if err != nil {
 		return err
 	}
+	defer restoreFK()
 
-	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
-		return fmt.Errorf("disable foreign keys: %w", err)
+	// Table recreation drops a table and renames a copy into its place.
+	// Modern ALTER TABLE RENAME validates the whole schema and fails on
+	// views and triggers that reference the table while it is gone.
+	restoreLegacy, err := setPragma(ctx, conn, "legacy_alter_table", 1)
+	if err != nil {
+		return err
 	}
-	defer func() {
-		if foreignKeysOn {
-			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys = ON")
-		}
-	}()
+	defer restoreLegacy()
 
 	// BEGIN IMMEDIATE takes the write lock up front so a concurrent writer
 	// (or a second migration) fails fast instead of deadlocking at the
@@ -135,29 +126,24 @@ func migrate(ctx context.Context, conn *sql.Conn, changes []Change) error {
 	return nil
 }
 
-func foreignKeysEnabled(ctx context.Context, conn *sql.Conn) (bool, error) {
-	var enabled int
-	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
-		return false, fmt.Errorf("read foreign_keys pragma: %w", err)
+// setPragma sets an integer pragma on conn and returns a func that restores
+// the previous value, even after ctx is canceled.
+func setPragma(ctx context.Context, conn *sql.Conn, name string, value int) (func(), error) {
+	var prev int
+	if err := conn.QueryRowContext(ctx, "PRAGMA "+name).Scan(&prev); err != nil {
+		return nil, fmt.Errorf("read %s pragma: %w", name, err)
 	}
-	return enabled == 1, nil
-}
-
-func busyTimeoutMS(ctx context.Context, conn *sql.Conn) (int, error) {
-	var ms int
-	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&ms); err != nil {
-		return 0, fmt.Errorf("read busy_timeout pragma: %w", err)
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA %s = %d", name, value)); err != nil {
+		return nil, fmt.Errorf("set %s pragma: %w", name, err)
 	}
-	return ms, nil
+	return func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf("PRAGMA %s = %d", name, prev))
+	}, nil
 }
 
 func execChanges(ctx context.Context, conn *sql.Conn, changes []Change) error {
 	for _, change := range changes {
-		for _, raw := range change.SQL {
-			stmt := strings.TrimSpace(raw)
-			if stmt == "" || strings.HasPrefix(stmt, "--") {
-				continue
-			}
+		for _, stmt := range change.SQL {
 			if _, err := conn.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("%s: %w\nSQL: %s", change.Description, err, stmt)
 			}
