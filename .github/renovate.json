@@ -1,24 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", ":semanticCommits", ":disableDependencyDashboard"],
-  "timezone": "Europe/Vienna",
-  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
-  "packageRules": [
-    {
-      "matchPackageNames": ["*"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
-      "groupName": "non-major dependencies",
-      "automerge": true,
-      "automergeType": "branch"
-    },
-    {
-      "matchPackageNames": ["*"],
-      "matchUpdateTypes": ["major"],
-      "automerge": false
-    }
-  ],
-  "platformAutomerge": true,
-  "separateMinorPatch": true,
-  "vulnerabilityAlerts": { "enabled": true },
-  "osvVulnerabilityAlerts": true
+  "extends": ["local>MizuchiLabs/.github"]
 }
