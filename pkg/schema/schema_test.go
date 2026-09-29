@@ -2,34 +2,20 @@ package schema
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewDatabase(t *testing.T) {
 	db := NewDatabase()
+	require.NotNil(t, db)
 
-	if db == nil {
-		t.Fatal("NewDatabase returned nil")
-	}
-
-	if db.Tables == nil {
-		t.Error("Tables map not initialized")
-	}
-
-	if db.Indexes == nil {
-		t.Error("Indexes map not initialized")
-	}
-
-	if db.Views == nil {
-		t.Error("Views map not initialized")
-	}
-
-	if db.Triggers == nil {
-		t.Error("Triggers map not initialized")
-	}
-
-	if len(db.Tables) != 0 {
-		t.Error("Tables should be empty initially")
-	}
+	assert.NotNil(t, db.Tables, "Tables map not initialized")
+	assert.NotNil(t, db.Indexes, "Indexes map not initialized")
+	assert.NotNil(t, db.Views, "Views map not initialized")
+	assert.NotNil(t, db.Triggers, "Triggers map not initialized")
+	assert.Empty(t, db.Tables)
 }
 
 func TestTableColumnNames(t *testing.T) {
@@ -42,15 +28,7 @@ func TestTableColumnNames(t *testing.T) {
 		},
 	}
 
-	names := table.ColumnNames()
-
-	if len(names) != 3 {
-		t.Fatalf("expected 3 column names, got %d", len(names))
-	}
-
-	if names[0] != "id" || names[1] != "name" || names[2] != "email" {
-		t.Errorf("unexpected column names: %v", names)
-	}
+	assert.Equal(t, []string{"id", "name", "email"}, table.ColumnNames())
 }
 
 func TestTableHasColumn(t *testing.T) {
@@ -62,21 +40,10 @@ func TestTableHasColumn(t *testing.T) {
 		},
 	}
 
-	if !table.HasColumn("id") {
-		t.Error("HasColumn should return true for 'id'")
-	}
-
-	if !table.HasColumn("name") {
-		t.Error("HasColumn should return true for 'name'")
-	}
-
-	if table.HasColumn("email") {
-		t.Error("HasColumn should return false for 'email'")
-	}
-
-	if table.HasColumn("") {
-		t.Error("HasColumn should return false for empty string")
-	}
+	assert.True(t, table.HasColumn("id"))
+	assert.True(t, table.HasColumn("name"))
+	assert.False(t, table.HasColumn("email"))
+	assert.False(t, table.HasColumn(""))
 }
 
 func TestTableGetColumn(t *testing.T) {
@@ -87,21 +54,10 @@ func TestTableGetColumn(t *testing.T) {
 		},
 	}
 
-	// Test existing column
 	idCol := table.GetColumn("id")
-	if idCol == nil {
-		t.Fatal("GetColumn returned nil for 'id'")
-	}
-	if idCol.Name != "id" {
-		t.Error("wrong column returned")
-	}
-	if idCol.PrimaryKey != 1 {
-		t.Error("id should be primary key")
-	}
+	require.NotNil(t, idCol)
+	assert.Equal(t, "id", idCol.Name)
+	assert.Equal(t, 1, idCol.PrimaryKey)
 
-	// Test empty name
-	emptyCol := table.GetColumn("")
-	if emptyCol != nil {
-		t.Error("GetColumn should return nil for empty string")
-	}
+	assert.Nil(t, table.GetColumn(""))
 }

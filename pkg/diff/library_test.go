@@ -1,18 +1,15 @@
 package diff
 
 import (
-	"database/sql"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCompare_IdenticalSchema(t *testing.T) {
-	db := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
-	defer func() { _ = db.Close() }()
+	db, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
 	schemaDir := createSchemaDir(
 		t,
 		"users.sql",
@@ -20,120 +17,59 @@ func TestCompare_IdenticalSchema(t *testing.T) {
 	)
 
 	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(changes) != 0 {
-		t.Errorf("expected no changes, got %d", len(changes))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, changes)
 }
 
 func TestCompare_AddTable(t *testing.T) {
-	db := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(t, "schema.sql", `
 		CREATE TABLE users (id INTEGER PRIMARY KEY);
 		CREATE TABLE posts (id INTEGER PRIMARY KEY);
 	`)
 
 	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(changes) == 0 {
-		t.Error("expected changes for new table")
-	}
-
-	found := false
-	for _, c := range changes {
-		if c.Type == CreateTable {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected create_table change")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []ChangeType{CreateTable}, changeTypes(changes))
 }
 
 func TestCompare_InvalidSchemaDir(t *testing.T) {
-	db := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
 	_, err := Compare(t.Context(), db, os.DirFS("/nonexistent/schema/dir"))
-	if err == nil {
-		t.Error("expected error for invalid schema dir")
-	}
+	assert.Error(t, err)
 }
 
 func TestCompareDatabases(t *testing.T) {
-	fromDB := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = fromDB.Close() }()
-	toDB := openTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
-	defer func() { _ = toDB.Close() }()
+	fromDB, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
+	toDB, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
 
 	changes, err := CompareDatabases(t.Context(), fromDB, toDB)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(changes) == 0 {
-		t.Error("expected changes between databases")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []ChangeType{AddColumn}, changeTypes(changes))
 }
 
 func TestGenerateSQL(t *testing.T) {
-	changes := []Change{
-		{
-			Type:        CreateTable,
-			Object:      "users",
-			Description: "Create table users",
-			SQL:         []string{"CREATE TABLE users (id INTEGER);"},
-		},
-	}
+	sql := GenerateSQL([]Change{{
+		Type:        CreateTable,
+		Object:      "users",
+		Description: "Create table users",
+		SQL:         []string{"CREATE TABLE users (id INTEGER);"},
+	}})
 
-	sql := GenerateSQL(changes)
-
-	// Check key parts are present
-	checks := []string{
+	for _, want := range []string{
 		"PRAGMA foreign_keys = OFF",
+		"PRAGMA legacy_alter_table = ON",
 		"BEGIN TRANSACTION",
 		"CREATE TABLE users",
 		"COMMIT",
+		"PRAGMA legacy_alter_table = OFF",
 		"PRAGMA foreign_keys = ON",
-	}
-
-	for _, check := range checks {
-		if !strings.Contains(sql, check) {
-			t.Errorf("GenerateSQL() missing %q", check)
-		}
+	} {
+		assert.Contains(t, sql, want)
 	}
 }
 
 func TestGenerateSQLEmpty(t *testing.T) {
-	if got := GenerateSQL(nil); got != "" {
-		t.Errorf("GenerateSQL(nil) = %q, want empty", got)
-	}
-}
-
-// Helper functions
-
-func openTestDB(t *testing.T, schema string) *sql.DB {
-	t.Helper()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("create test db: %v", err)
-	}
-
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		t.Fatalf("exec schema: %v", err)
-	}
-
-	return db
+	assert.Empty(t, GenerateSQL(nil))
 }

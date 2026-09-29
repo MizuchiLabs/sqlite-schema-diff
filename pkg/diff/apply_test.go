@@ -3,30 +3,26 @@ package diff
 import (
 	"database/sql"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestApply_NoChanges(t *testing.T) {
-	db, _ := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
-	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	applied, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, applied)
 }
 
 func TestApply_AddColumn(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(
 		t,
 		"users.sql",
@@ -34,50 +30,30 @@ func TestApply_AddColumn(t *testing.T) {
 	)
 
 	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Verify using fresh connection
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-
-	var colName string
-	err = checkDB.QueryRow("SELECT name FROM pragma_table_info('users') WHERE name = 'name'").
-		Scan(&colName)
-	if err != nil {
-		t.Fatalf("column not added: %v", err)
-	}
+	assert.Equal(t, 1, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'name'`),
+		"column not added")
 }
 
 func TestApply_SkipDestructive(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `
+	db, dbPath := newTestDB(t, `
 		CREATE TABLE users (id INTEGER PRIMARY KEY);
 		CREATE TABLE posts (id INTEGER PRIMARY KEY);
 	`)
-	defer func() { _ = db.Close() }()
 	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 
 	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	// posts table should still exist - verify with fresh connection
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-
-	var name string
-	err = checkDB.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'").
-		Scan(&name)
-	if err != nil {
-		t.Error("posts table was dropped despite SkipDestructive")
-	}
+	assert.Equal(t, 1, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='posts'`),
+		"posts table was dropped despite SkipDestructive")
 }
 
 func TestApply_Backup(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(
 		t,
 		"users.sql",
@@ -86,120 +62,66 @@ func TestApply_Backup(t *testing.T) {
 
 	backupPath := dbPath + ".backup"
 	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		t.Error("backup file was not created")
-	}
-
-	// Verify backup has original schema
-	backupDB, _ := sql.Open("sqlite", backupPath)
-	defer func() { _ = backupDB.Close() }()
-
-	var count int
-	if err := backupDB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users')").
-		Scan(&count); err != nil {
-		t.Fatalf("count columns: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("backup should have 1 column, got %d", count)
-	}
-}
-
-// Helper functions
-
-func createTestDBWithPath(t *testing.T, schema string) (*sql.DB, string) {
-	t.Helper()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("create test db: %v", err)
-	}
-
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		t.Fatalf("exec schema: %v", err)
-	}
-
-	return db, dbPath
-}
-
-func createSchemaDir(t *testing.T, filename, content string) fs.FS {
-	t.Helper()
-	tmpDir := t.TempDir()
-
-	if err := os.WriteFile(filepath.Join(tmpDir, filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write schema file: %v", err)
-	}
-
-	return os.DirFS(tmpDir)
-}
-
-func TestApply_SkipDestructiveAllFiltered(t *testing.T) {
-	// When all changes are destructive and SkipDestructive is true,
-	// there should be no changes applied
-	db, dbPath := createTestDBWithPath(t, `
-		CREATE TABLE users (id INTEGER PRIMARY KEY);
-		CREATE TABLE posts (id INTEGER PRIMARY KEY);
-	`)
-	defer func() { _ = db.Close() }()
-	// Only keep users table - dropping posts is destructive
-	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-
-	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify posts table still exists
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-
-	var count int
-	err = checkDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").
-		Scan(&count)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 2 {
-		t.Errorf("expected 2 tables, got %d", count)
-	}
-}
-
-func TestApply_InvalidSchemaDir(t *testing.T) {
-	db, _ := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-
-	_, err := Apply(t.Context(), db, os.DirFS("/nonexistent/schema/dir"), ApplyOptions{})
-	if err == nil {
-		t.Error("expected error for invalid schema dir")
-	}
+	require.FileExists(t, backupPath)
+	assert.Equal(t, 1, queryInt(t, backupPath, `SELECT COUNT(*) FROM pragma_table_info('users')`),
+		"backup should have the original schema")
 }
 
 func TestApply_NoBackupWhenEmpty(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(
 		t,
 		"users.sql",
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
 	)
 
-	// Empty BackupPath means no backup
 	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: ""})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Verify no backup was created
+	assert.NoFileExists(t, dbPath+".backup")
+}
+
+func TestApply_BackupKeptWhenNewBackupFails(t *testing.T) {
+	db, dbPath := newTestDB(t, `CREATE TABLE a (id INTEGER PRIMARY KEY);`)
+	schemaDir := createSchemaDir(t, "a.sql", `CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);`)
+
 	backupPath := dbPath + ".backup"
-	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-		t.Error("backup file should not exist when BackupPath is empty")
-	}
+	require.NoError(t, os.WriteFile(backupPath, []byte("old"), 0o600))
+	// A non-empty directory at the temp path makes VACUUM INTO fail.
+	require.NoError(t, os.Mkdir(backupPath+".tmp", 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath+".tmp", "f"), nil, 0o600))
+
+	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath})
+	require.Error(t, err)
+
+	b, err := os.ReadFile(backupPath)
+	require.NoError(t, err)
+	assert.Equal(t, "old", string(b), "previous backup was destroyed by a failed backup")
+}
+
+func TestApply_SkipDestructiveAllFiltered(t *testing.T) {
+	db, dbPath := newTestDB(t, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY);
+		CREATE TABLE posts (id INTEGER PRIMARY KEY);
+	`)
+	// Dropping posts is the only change, and it is destructive.
+	schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
+
+	applied, err := Apply(t.Context(), db, schemaDir, ApplyOptions{SkipDestructive: true})
+	require.NoError(t, err)
+	assert.Empty(t, applied)
+
+	assert.Equal(t, 2, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`))
+}
+
+func TestApply_InvalidSchemaDir(t *testing.T) {
+	db, _ := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
+
+	_, err := Apply(t.Context(), db, os.DirFS("/nonexistent/schema/dir"), ApplyOptions{})
+	assert.Error(t, err)
 }
 
 // TestApply_ConvergesInOneApply guards against surprises: after a single
@@ -207,51 +129,27 @@ func TestApply_NoBackupWhenEmpty(t *testing.T) {
 // cannot express (UNIQUE, non-constant defaults) force a table recreation
 // instead of a lossy ADD COLUMN.
 func TestApply_ConvergesInOneApply(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-	schemaDir := createSchemaDir(
-		t,
-		"users.sql",
+	dbPath, left := applyVersions(t,
+		`CREATE TABLE users (id INTEGER PRIMARY KEY);`,
 		`CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			email TEXT NOT NULL UNIQUE,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
+		ApplyOptions{},
 	)
+	require.Empty(t, left, "expected no changes after one apply")
 
-	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-
-	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatalf("re-compare: %v", err)
-	}
-	if len(changes) != 0 {
-		t.Fatalf("expected no changes after one apply, got %d: %+v", len(changes), changes)
-	}
-
-	// NOT NULL on the added column must be preserved by the recreation.
-	var notNull int
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-	if err := checkDB.QueryRow(
-		`SELECT "notnull" FROM pragma_table_info('users') WHERE name = 'email'`,
-	).Scan(&notNull); err != nil {
-		t.Fatal(err)
-	}
-	if notNull != 1 {
-		t.Error("email column lost its NOT NULL constraint")
-	}
+	assert.Equal(t, 1, queryInt(t, dbPath,
+		`SELECT "notnull" FROM pragma_table_info('users') WHERE name = 'email'`),
+		"email column lost its NOT NULL constraint")
 }
 
 // TestApply_WaitsForConcurrentWriter verifies the busy timeout: a concurrent
 // writer holding the write lock makes the migration wait instead of failing
 // immediately with SQLITE_BUSY.
 func TestApply_WaitsForConcurrentWriter(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
+	db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(
 		t,
 		"users.sql",
@@ -259,18 +157,13 @@ func TestApply_WaitsForConcurrentWriter(t *testing.T) {
 	)
 
 	holder, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = holder.Close() }()
 
 	tx, err := holder.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), `INSERT INTO users (id) VALUES (1)`); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = tx.ExecContext(t.Context(), `INSERT INTO users (id) VALUES (1)`)
+	require.NoError(t, err)
 
 	released := make(chan struct{})
 	go func() {
@@ -281,24 +174,21 @@ func TestApply_WaitsForConcurrentWriter(t *testing.T) {
 
 	_, err = Apply(t.Context(), db, schemaDir, ApplyOptions{})
 	<-released
-	if err != nil {
-		t.Fatalf("apply should wait for the concurrent writer, got: %v", err)
-	}
+	assert.NoError(t, err, "apply should wait for the concurrent writer")
 }
 
 // TestApply_FKViolationRollsBack verifies the pre-commit foreign key check:
 // dropping a parent table while child rows still reference it must roll
 // back the whole migration instead of committing broken data.
 func TestApply_FKViolationRollsBack(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `
+	db, dbPath := newTestDB(t, `
 		CREATE TABLE users (id INTEGER PRIMARY KEY);
 		CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));
 		INSERT INTO users VALUES (1);
 		INSERT INTO posts VALUES (10, 1);
 	`)
-	defer func() { _ = db.Close() }()
 
-	// Target schema only keeps posts: dropping users would orphan the post.
+	// Target schema only keeps posts, so dropping users orphans the post.
 	schemaDir := createSchemaDir(
 		t,
 		"posts.sql",
@@ -306,66 +196,22 @@ func TestApply_FKViolationRollsBack(t *testing.T) {
 	)
 
 	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
-	if err == nil {
-		t.Fatal("expected FK violation error, got nil")
-	}
-	if !strings.Contains(err.Error(), "foreign key violation") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.ErrorContains(t, err, "foreign key violation")
 
-	// The rollback must have restored the dropped users table.
-	checkDB, _ := sql.Open("sqlite", dbPath)
-	defer func() { _ = checkDB.Close() }()
-	var name string
-	if err := checkDB.QueryRow(
-		`SELECT name FROM sqlite_master WHERE type='table' AND name='users'`,
-	).Scan(&name); err != nil {
-		t.Fatal("users table was not restored by the rollback")
-	}
+	assert.Equal(t, 1, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'`),
+		"users table was not restored by the rollback")
 }
 
 // TestApply_QuotedIdentifierNames runs a full migration against objects
 // whose names contain double quotes and semicolons.
 func TestApply_QuotedIdentifierNames(t *testing.T) {
-	db, _ := createTestDBWithPath(t, `CREATE TABLE "user ""admin""" (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-	schemaDir := createSchemaDir(
-		t,
-		"weird.sql",
+	_, left := applyVersions(t,
+		`CREATE TABLE "user ""admin""" (id INTEGER PRIMARY KEY);`,
 		`CREATE TABLE "user ""admin""" (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'a;b');`,
+		ApplyOptions{},
 	)
-
-	_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{})
-	if err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-
-	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatalf("re-compare: %v", err)
-	}
-	if len(changes) != 0 {
-		t.Fatalf("expected convergence, got %+v", changes)
-	}
-}
-
-// applyVersions applies v1 to a fresh database, then v2 with opts, and
-// returns the database and the changes still left after that.
-func applyVersions(t *testing.T, v1, v2 string, opts ApplyOptions) (*sql.DB, []Change) {
-	t.Helper()
-	db, _ := createTestDBWithPath(t, v1)
-	t.Cleanup(func() { _ = db.Close() })
-
-	schemaDir := createSchemaDir(t, "schema.sql", v2)
-	if _, err := Apply(t.Context(), db, schemaDir, opts); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-
-	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatalf("re-compare: %v", err)
-	}
-	return db, changes
+	assert.Empty(t, left, "expected convergence")
 }
 
 func TestApply_ViewOnRecreatedTable(t *testing.T) {
@@ -376,9 +222,7 @@ func TestApply_ViewOnRecreatedTable(t *testing.T) {
 		CREATE VIEW v AS SELECT id, x FROM a;`,
 		ApplyOptions{},
 	)
-	if len(left) != 0 {
-		t.Fatalf("expected convergence, got %+v", left)
-	}
+	assert.Empty(t, left, "expected convergence")
 }
 
 func TestApply_TriggerReferencingRecreatedTable(t *testing.T) {
@@ -391,13 +235,11 @@ func TestApply_TriggerReferencingRecreatedTable(t *testing.T) {
 		CREATE TRIGGER t AFTER INSERT ON a BEGIN INSERT INTO log(n) VALUES (new.id); END;`,
 		ApplyOptions{},
 	)
-	if len(left) != 0 {
-		t.Fatalf("expected convergence, got %+v", left)
-	}
+	assert.Empty(t, left, "expected convergence")
 }
 
 func TestApply_SkipDestructiveKeepsIndexesOfSkippedTable(t *testing.T) {
-	db, left := applyVersions(t,
+	dbPath, left := applyVersions(t,
 		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT, y TEXT);
 		CREATE INDEX ix ON a(x);`,
 		`CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);
@@ -406,20 +248,14 @@ func TestApply_SkipDestructiveKeepsIndexesOfSkippedTable(t *testing.T) {
 		ApplyOptions{SkipDestructive: true},
 	)
 
-	if safe := WithoutDestructive(left); len(safe) != 0 {
-		t.Fatalf("expected only the skipped recreation to remain, got %+v", safe)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('ix', 'b')`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 2 {
-		t.Errorf("expected index ix kept and table b created, got %d of 2", n)
-	}
+	assert.Empty(t, WithoutDestructive(left), "expected only the skipped recreation to remain")
+	assert.Equal(t, 2, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('ix', 'b')`),
+		"expected index ix kept and table b created")
 }
 
 func TestApply_SkipDestructiveSkipsGuessedRename(t *testing.T) {
-	db, left := applyVersions(t,
+	dbPath, left := applyVersions(t,
 		`CREATE TABLE a (id INTEGER PRIMARY KEY, old_name TEXT);
 		CREATE INDEX ix ON a(old_name);`,
 		`CREATE TABLE a (id INTEGER PRIMARY KEY, new_name TEXT);
@@ -427,16 +263,10 @@ func TestApply_SkipDestructiveSkipsGuessedRename(t *testing.T) {
 		ApplyOptions{SkipDestructive: true},
 	)
 
-	if safe := WithoutDestructive(left); len(safe) != 0 {
-		t.Fatalf("expected only the skipped rename to remain, got %+v", safe)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('a') WHERE name = 'old_name'`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Error("column was renamed despite SkipDestructive")
-	}
+	assert.Empty(t, WithoutDestructive(left), "expected only the skipped rename to remain")
+	assert.Equal(t, 1, queryInt(t, dbPath,
+		`SELECT COUNT(*) FROM pragma_table_info('a') WHERE name = 'old_name'`),
+		"column was renamed despite SkipDestructive")
 }
 
 func TestApply_VirtualTable(t *testing.T) {
@@ -446,18 +276,14 @@ func TestApply_VirtualTable(t *testing.T) {
 		CREATE VIRTUAL TABLE f USING fts5(body);`,
 		ApplyOptions{},
 	)
-	if len(left) != 0 {
-		t.Fatalf("expected convergence after create, got %+v", left)
-	}
+	assert.Empty(t, left, "expected convergence after create")
 
 	_, left = applyVersions(t,
 		`CREATE VIRTUAL TABLE f USING fts5(body);`,
 		`CREATE VIRTUAL TABLE f USING fts5(title, body);`,
 		ApplyOptions{},
 	)
-	if len(left) != 0 {
-		t.Fatalf("expected convergence after change, got %+v", left)
-	}
+	assert.Empty(t, left, "expected convergence after change")
 }
 
 func TestApply_InsteadOfTriggerSurvivesViewChange(t *testing.T) {
@@ -465,46 +291,14 @@ func TestApply_InsteadOfTriggerSurvivesViewChange(t *testing.T) {
 		CREATE VIEW v AS SELECT %s FROM a;
 		CREATE TRIGGER vt INSTEAD OF INSERT ON v BEGIN INSERT INTO a(id) VALUES (new.id); END;`
 	_, left := applyVersions(t, fmt.Sprintf(s, "id"), fmt.Sprintf(s, "id, x"), ApplyOptions{})
-	if len(left) != 0 {
-		t.Fatalf("expected convergence, got %+v", left)
-	}
+	assert.Empty(t, left, "expected convergence")
 }
 
 func TestApply_CommentOnlyChangeIsNoop(t *testing.T) {
-	db, _ := createTestDBWithPath(t, "CREATE TABLE a (\n id INTEGER PRIMARY KEY -- the id\n);")
-	defer func() { _ = db.Close() }()
+	db, _ := newTestDB(t, "CREATE TABLE a (\n id INTEGER PRIMARY KEY -- the id\n);")
 	schemaDir := createSchemaDir(t, "a.sql", "CREATE TABLE a (\n id INTEGER PRIMARY KEY -- primary key\n);")
 
 	changes, err := Compare(t.Context(), db, schemaDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 0 {
-		t.Fatalf("expected no changes for a comment edit, got %+v", changes)
-	}
-}
-
-func TestApply_BackupKeptWhenNewBackupFails(t *testing.T) {
-	db, dbPath := createTestDBWithPath(t, `CREATE TABLE a (id INTEGER PRIMARY KEY);`)
-	defer func() { _ = db.Close() }()
-	schemaDir := createSchemaDir(t, "a.sql", `CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT);`)
-
-	backupPath := dbPath + ".backup"
-	if err := os.WriteFile(backupPath, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A directory at the temp path makes VACUUM INTO fail.
-	if err := os.Mkdir(backupPath+".tmp", 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(backupPath+".tmp", "f"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath}); err == nil {
-		t.Fatal("expected backup error")
-	}
-	if b, _ := os.ReadFile(backupPath); string(b) != "old" {
-		t.Error("previous backup was destroyed by a failed backup")
-	}
+	require.NoError(t, err)
+	assert.Empty(t, changes, "a comment edit must not change anything")
 }

@@ -2,6 +2,8 @@ package diff
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNormalizeSQL(t *testing.T) {
@@ -49,10 +51,7 @@ func TestNormalizeSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeSQL(tt.input)
-			if got != tt.want {
-				t.Errorf("normalizeSQL() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, normalizeSQL(tt.input))
 		})
 	}
 }

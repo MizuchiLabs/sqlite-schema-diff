@@ -1,9 +1,10 @@
 package diff
 
 import (
-	"slices"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mizuchilabs/sqlite-schema-diff/pkg/schema"
 )
@@ -173,20 +174,8 @@ func TestDiff(t *testing.T) {
 
 			changes := Diff(tt.from, tt.to)
 
-			if len(changes) != len(tt.wantChangeTypes) {
-				t.Errorf("got %d changes, want %d", len(changes), len(tt.wantChangeTypes))
-				return
-			}
-
-			for i, ct := range tt.wantChangeTypes {
-				if changes[i].Type != ct {
-					t.Errorf("change[%d].Type = %v, want %v", i, changes[i].Type, ct)
-				}
-			}
-
-			if got := HasDestructive(changes); got != tt.wantDestructive {
-				t.Errorf("HasDestructive() = %v, want %v", got, tt.wantDestructive)
-			}
+			assert.Equal(t, tt.wantChangeTypes, changeTypes(changes))
+			assert.Equal(t, tt.wantDestructive, HasDestructive(changes))
 		})
 	}
 }
@@ -257,16 +246,7 @@ func TestDiffIndexes(t *testing.T) {
 
 			changes := Diff(tt.from, tt.to)
 
-			if len(changes) != len(tt.wantChangeTypes) {
-				t.Errorf("got %d changes, want %d", len(changes), len(tt.wantChangeTypes))
-				return
-			}
-
-			for i, ct := range tt.wantChangeTypes {
-				if changes[i].Type != ct {
-					t.Errorf("change[%d].Type = %v, want %v", i, changes[i].Type, ct)
-				}
-			}
+			assert.Equal(t, tt.wantChangeTypes, changeTypes(changes))
 		})
 	}
 }
@@ -353,16 +333,7 @@ func TestDiffViews(t *testing.T) {
 
 			changes := Diff(tt.from, tt.to)
 
-			if len(changes) != len(tt.wantChangeTypes) {
-				t.Errorf("got %d changes, want %d", len(changes), len(tt.wantChangeTypes))
-				return
-			}
-
-			for i, ct := range tt.wantChangeTypes {
-				if changes[i].Type != ct {
-					t.Errorf("change[%d].Type = %v, want %v", i, changes[i].Type, ct)
-				}
-			}
+			assert.Equal(t, tt.wantChangeTypes, changeTypes(changes))
 		})
 	}
 }
@@ -455,16 +426,7 @@ func TestDiffTriggers(t *testing.T) {
 
 			changes := Diff(tt.from, tt.to)
 
-			if len(changes) != len(tt.wantChangeTypes) {
-				t.Errorf("got %d changes, want %d", len(changes), len(tt.wantChangeTypes))
-				return
-			}
-
-			for i, ct := range tt.wantChangeTypes {
-				if changes[i].Type != ct {
-					t.Errorf("change[%d].Type = %v, want %v", i, changes[i].Type, ct)
-				}
-			}
+			assert.Equal(t, tt.wantChangeTypes, changeTypes(changes))
 		})
 	}
 }
@@ -673,27 +635,12 @@ func TestRecreatedTableCascades(t *testing.T) {
 
 			changes := Diff(tt.from, tt.to)
 
-			if len(changes) != len(tt.wantChangeTypes) {
-				t.Errorf("got %d changes, want %d", len(changes), len(tt.wantChangeTypes))
-				for i, c := range changes {
-					t.Logf("  change[%d]: %v %s", i, c.Type, c.Object)
-				}
-				return
+			var objects []string
+			for _, c := range changes {
+				objects = append(objects, c.Object)
 			}
-
-			for i, ct := range tt.wantChangeTypes {
-				if changes[i].Type != ct {
-					t.Errorf("change[%d].Type = %v, want %v", i, changes[i].Type, ct)
-				}
-				if changes[i].Object != tt.wantObjects[i] {
-					t.Errorf(
-						"change[%d].Object = %q, want %q",
-						i,
-						changes[i].Object,
-						tt.wantObjects[i],
-					)
-				}
-			}
+			assert.Equal(t, tt.wantChangeTypes, changeTypes(changes))
+			assert.Equal(t, tt.wantObjects, objects)
 		})
 	}
 }
@@ -732,10 +679,7 @@ func TestGenerateAddColumnSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := generateAddColumnSQL(tt.tableName, tt.col)
-			if got != tt.wantSQL {
-				t.Errorf("generateAddColumnSQL() = %q, want %q", got, tt.wantSQL)
-			}
+			assert.Equal(t, tt.wantSQL, generateAddColumnSQL(tt.tableName, tt.col))
 		})
 	}
 }
@@ -750,12 +694,7 @@ func TestSortChanges(t *testing.T) {
 
 	sortChanges(changes)
 
-	want := []ChangeType{DropTrigger, DropIndex, CreateTable, CreateIndex}
-	for i, ct := range want {
-		if changes[i].Type != ct {
-			t.Errorf("after sort: changes[%d].Type = %v, want %v", i, changes[i].Type, ct)
-		}
-	}
+	assert.Equal(t, []ChangeType{DropTrigger, DropIndex, CreateTable, CreateIndex}, changeTypes(changes))
 }
 
 func TestColumnChanged(t *testing.T) {
@@ -823,10 +762,7 @@ func TestColumnChanged(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := columnChanged(tt.from, tt.to)
-			if got != tt.want {
-				t.Errorf("columnChanged() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, columnChanged(tt.from, tt.to))
 		})
 	}
 }
@@ -856,10 +792,7 @@ func TestDefaultForType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.colType, func(t *testing.T) {
-			got := defaultForType(tt.colType)
-			if got != tt.want {
-				t.Errorf("defaultForType(%q) = %q, want %q", tt.colType, got, tt.want)
-			}
+			assert.Equal(t, tt.want, defaultForType(tt.colType))
 		})
 	}
 }
@@ -923,10 +856,7 @@ func TestReplaceTableName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := replaceTableName(tt.sql, tt.newName)
-			if got != tt.want {
-				t.Errorf("replaceTableName(%q, %q) = %q, want %q", tt.sql, tt.newName, got, tt.want)
-			}
+			assert.Equal(t, tt.want, replaceTableName(tt.sql, tt.newName))
 		})
 	}
 }
@@ -1065,18 +995,12 @@ func TestCanAddColumns(t *testing.T) {
 			from.SQL = fromSQL
 
 			got := canAddColumns(from, to, []schema.Column{tt.col})
-			if got != tt.want {
-				t.Fatalf("canAddColumns() = %v, want %v", got, tt.want)
-			}
+			require.Equal(t, tt.want, got)
 
 			if got && tt.wantSQL != "" {
 				added := diffTableColumns(from, to)
-				if len(added) != 1 || added[0].Type != AddColumn {
-					t.Fatalf("expected single AddColumn change, got %+v", added)
-				}
-				if added[0].SQL[0] != tt.wantSQL {
-					t.Errorf("SQL = %q, want %q", added[0].SQL[0], tt.wantSQL)
-				}
+				require.Equal(t, []ChangeType{AddColumn}, changeTypes(added))
+				assert.Equal(t, []string{tt.wantSQL}, added[0].SQL)
 			}
 		})
 	}
@@ -1101,16 +1025,11 @@ func TestGenerateRecreateSQL_FillsDefaultsForNewColumns(t *testing.T) {
 
 	stmts := generateRecreateSQL("users", "users", from, to)
 
-	insert := stmts[1]
-	if !strings.Contains(insert, `"email"`) || !strings.Contains(insert, "''") {
-		t.Errorf("expected default fill for NOT NULL new column, got %q", insert)
-	}
-	if !strings.Contains(insert, "CURRENT_TIMESTAMP") {
-		t.Errorf("expected default fill for new column with default, got %q", insert)
-	}
-	if strings.Contains(insert, `"bio"`) {
-		t.Errorf("nullable new column without default should be omitted, got %q", insert)
-	}
+	require.Len(t, stmts, 4)
+	assert.Equal(t,
+		`INSERT INTO "users__new" ("id", "email", "created_at") SELECT "id", '', CURRENT_TIMESTAMP FROM "users";`,
+		stmts[1],
+		"NOT NULL and defaulted new columns are filled, nullable ones are left out")
 }
 
 // TestDiff_TableConstraintChangeRecreates pins the simulation behavior:
@@ -1132,10 +1051,7 @@ func TestDiff_TableConstraintChangeRecreates(t *testing.T) {
 		SQL: `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, CHECK (length(name) > 0))`,
 	}
 
-	changes := diffTableColumns(from, to)
-	if len(changes) != 1 || changes[0].Type != RecreateTable {
-		t.Fatalf("expected single RecreateTable, got %+v", changes)
-	}
+	assert.Equal(t, []ChangeType{RecreateTable}, changeTypes(diffTableColumns(from, to)))
 }
 
 // TestDiff_ExistingConstraintKeepsAddColumn pins SQLite's ALTER TABLE
@@ -1157,10 +1073,7 @@ func TestDiff_ExistingConstraintKeepsAddColumn(t *testing.T) {
 		SQL: `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, CHECK (id > 0))`,
 	}
 
-	changes := diffTableColumns(from, to)
-	if len(changes) != 1 || changes[0].Type != AddColumn {
-		t.Fatalf("expected single AddColumn, got %+v", changes)
-	}
+	assert.Equal(t, []ChangeType{AddColumn}, changeTypes(diffTableColumns(from, to)))
 }
 
 // TestDiff_CaseOnlyRename pins the rename-not-drop behavior: SQLite table
@@ -1195,12 +1108,8 @@ func TestDiff_CaseOnlyRename(t *testing.T) {
 	initMaps(to)
 
 	changes := Diff(from, to)
-	if len(changes) != 1 || changes[0].Type != RenameTable {
-		t.Fatalf("expected single RenameTable, got %+v", changes)
-	}
-	if changes[0].Destructive {
-		t.Error("rename must not be flagged destructive")
-	}
+	require.Equal(t, []ChangeType{RenameTable}, changeTypes(changes))
+	assert.False(t, changes[0].Destructive, "rename must not be flagged destructive")
 	// SQLite resolves table names case-insensitively, so the rename goes
 	// through a temporary table: create, copy, drop old, rename.
 	wantSQL := []string{
@@ -1209,7 +1118,5 @@ func TestDiff_CaseOnlyRename(t *testing.T) {
 		`DROP TABLE "users";`,
 		`ALTER TABLE "users__new" RENAME TO "USERS";`,
 	}
-	if !slices.Equal(changes[0].SQL, wantSQL) {
-		t.Errorf("SQL = %q, want %q", changes[0].SQL, wantSQL)
-	}
+	assert.Equal(t, wantSQL, changes[0].SQL)
 }

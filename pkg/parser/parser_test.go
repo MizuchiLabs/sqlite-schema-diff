@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,7 +23,6 @@ func TestFromSQL(t *testing.T) {
 		wantIndexes  []string
 		wantViews    []string
 		wantTriggers []string
-		wantErr      bool
 	}{
 		{
 			name:       "single table",
@@ -66,53 +66,41 @@ func TestFromSQL(t *testing.T) {
 			wantTriggers: []string{"update_timestamp"},
 		},
 		{
-			name:    "invalid SQL",
-			sql:     `INSERT INTO nonexistent_table VALUES (1);`,
-			wantErr: true,
-		},
-		{
-			name:       "empty schema",
-			sql:        `SELECT 1;`,
-			wantTables: nil,
+			name: "no schema objects",
+			sql:  `SELECT 1;`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := FromSQL(t.Context(), tt.sql)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("FromSQL() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.wantErr {
-				return
-			}
+			require.NoError(t, err)
 
-			assertKeys(t, "tables", keys(db.Tables), tt.wantTables)
-			assertKeys(t, "indexes", keys(db.Indexes), tt.wantIndexes)
-			assertKeys(t, "views", keys(db.Views), tt.wantViews)
-			assertKeys(t, "triggers", keys(db.Triggers), tt.wantTriggers)
+			assert.ElementsMatch(t, tt.wantTables, keys(db.Tables), "tables")
+			assert.ElementsMatch(t, tt.wantIndexes, keys(db.Indexes), "indexes")
+			assert.ElementsMatch(t, tt.wantViews, keys(db.Views), "views")
+			assert.ElementsMatch(t, tt.wantTriggers, keys(db.Triggers), "triggers")
 		})
 	}
 }
 
+func TestFromSQL_InvalidSQL(t *testing.T) {
+	_, err := FromSQL(t.Context(), `INSERT INTO nonexistent_table VALUES (1);`)
+	assert.Error(t, err)
+}
+
 func TestFromSQL_ColumnDetails(t *testing.T) {
-	sql := `CREATE TABLE users (
+	db, err := FromSQL(t.Context(), `CREATE TABLE users (
 		id INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
 		email TEXT UNIQUE,
 		age INTEGER DEFAULT 0,
 		bio TEXT
-	);`
-
-	db, err := FromSQL(t.Context(), sql)
-	if err != nil {
-		t.Fatal(err)
-	}
+	);`)
+	require.NoError(t, err)
 
 	table := db.Tables["users"]
-	if table == nil {
-		t.Fatal("users table not found")
-	}
+	require.NotNil(t, table)
 
 	tests := []struct {
 		colName     string
@@ -130,333 +118,29 @@ func TestFromSQL_ColumnDetails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.colName, func(t *testing.T) {
-			var col *struct {
-				Name, Type string
-				NotNull    bool
-				PK         int
-				Default    *string
-			}
-			for _, c := range table.Columns {
-				if c.Name == tt.colName {
-					col = &struct {
-						Name, Type string
-						NotNull    bool
-						PK         int
-						Default    *string
-					}{c.Name, c.Type, c.NotNull, c.PrimaryKey, c.Default}
-					break
-				}
-			}
-			if col == nil {
-				t.Fatalf("column %s not found", tt.colName)
-			}
-			if col.Type != tt.wantType {
-				t.Errorf("type = %s, want %s", col.Type, tt.wantType)
-			}
-			if col.NotNull != tt.wantNotNull {
-				t.Errorf("notnull = %v, want %v", col.NotNull, tt.wantNotNull)
-			}
-			if col.PK != tt.wantPK {
-				t.Errorf("pk = %d, want %d", col.PK, tt.wantPK)
-			}
-			if (col.Default == nil) != (tt.wantDefault == nil) {
-				t.Errorf("default = %v, want %v", col.Default, tt.wantDefault)
-			}
+			col := table.GetColumn(tt.colName)
+			require.NotNil(t, col)
+			assert.Equal(t, tt.wantType, col.Type, "type")
+			assert.Equal(t, tt.wantNotNull, col.NotNull, "not null")
+			assert.Equal(t, tt.wantPK, col.PrimaryKey, "primary key")
+			assert.Equal(t, tt.wantDefault, col.Default, "default")
 		})
 	}
 }
 
-func TestFromDB(t *testing.T) {
-	// Create temp database file
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	// Create database with schema
-	schemaSQL := `
-		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
-		CREATE INDEX idx_name ON users(name);
-	`
-	db, err := FromSQL(t.Context(), schemaSQL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Write to file using sql.Open
-	sqlDB, err := openAndExec(dbPath, schemaSQL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	// Test FromDB
-	dbFromFile, err := FromDB(t.Context(), sqlDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(dbFromFile.Tables) != len(db.Tables) {
-		t.Errorf("table count mismatch: got %d, want %d", len(dbFromFile.Tables), len(db.Tables))
-	}
-}
-
-func TestFromDirectory(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create SQL files (should be applied in sorted order)
-	files := map[string]string{
-		"01_users.sql": `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
-		"02_posts.sql": `CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
-		"03_index.sql": `CREATE INDEX idx_posts_user ON posts(user_id);`,
-	}
-
-	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(db.Tables) != 2 {
-		t.Errorf("expected 2 tables, got %d", len(db.Tables))
-	}
-	if len(db.Indexes) != 1 {
-		t.Errorf("expected 1 index, got %d", len(db.Indexes))
-	}
-}
-
-func TestFromDirectory_Nested(t *testing.T) {
-	tmpDir := t.TempDir()
-	subDir := filepath.Join(tmpDir, "migrations")
-	if err := os.MkdirAll(subDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create SQL files
-	topFile := filepath.Join(tmpDir, "01.sql")
-	subFile := filepath.Join(subDir, "02.sql")
-	if err := os.WriteFile(topFile, []byte(`CREATE TABLE a (id INTEGER);`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(subFile, []byte(`CREATE TABLE b (id INTEGER);`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(db.Tables) != 2 {
-		t.Errorf("expected 2 tables from nested dirs, got %d", len(db.Tables))
-	}
-}
-
-func TestFromDirectory_Empty(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(db.Tables) != 0 {
-		t.Errorf("expected 0 tables, got %d", len(db.Tables))
-	}
-}
-
-func TestFromDirectory_NonExistent(t *testing.T) {
-	_, err := ReadFiles(t.Context(), os.DirFS("/nonexistent/path"))
-	if err == nil {
-		t.Error("expected error for non-existent directory")
-	}
-}
-
-func TestFromDirectory_InvalidSQL(t *testing.T) {
-	tmpDir := t.TempDir()
-	badFile := filepath.Join(tmpDir, "bad.sql")
-	if err := os.WriteFile(badFile, []byte(`INVALID SQL`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err == nil {
-		t.Error("expected error for invalid SQL")
-	}
-}
-
-func TestFromDirectory_IgnoreNonSQL(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Valid SQL file
-	if err := os.WriteFile(
-		filepath.Join(tmpDir, "01_valid.sql"),
-		[]byte(`CREATE TABLE t1(id INT);`),
-		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	// Non-SQL file that should be ignored
-	if err := os.WriteFile(
-		filepath.Join(tmpDir, "README.md"),
-		[]byte(`This should be ignored`),
-		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	// Hidden file (dotfile) - should be ignored based on .sql suffix check, but just in case
-	if err := os.WriteFile(filepath.Join(tmpDir, ".config"), []byte(`ignored`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(db.Tables) != 1 {
-		t.Errorf("expected 1 table, got %d", len(db.Tables))
-	}
-	if _, ok := db.Tables["t1"]; !ok {
-		t.Error("expected table t1 to exist")
-	}
-}
-
-// Helpers
-
-func keys[K comparable, V any](m map[K]V) []string {
-	result := make([]string, 0, len(m))
-	for k := range m {
-		result = append(result, any(k).(string))
-	}
-	return result
-}
-
-func assertKeys(t *testing.T, name string, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("%s count = %d, want %d (got: %v)", name, len(got), len(want), got)
-	}
-}
-
-func openAndExec(path, sqlStr string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	_, err = db.Exec(sqlStr)
-	return db, err
-}
-
-func TestReadFiles_FS(t *testing.T) {
-	// Create a mock filesystem using fstest.MapFS
-	mockFS := fstest.MapFS{
-		"schema/01_users.sql": &fstest.MapFile{
-			Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`),
-		},
-		"schema/02_posts.sql": &fstest.MapFile{
-			Data: []byte(
-				`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
-			),
-		},
-		"schema/03_index.sql": &fstest.MapFile{
-			Data: []byte(`CREATE INDEX idx_posts_user ON posts(user_id);`),
-		},
-	}
-
-	sub, err := fs.Sub(mockFS, "schema")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := ReadFiles(t.Context(), sub)
-	if err != nil {
-		t.Fatalf("ReadFiles with fs failed: %v", err)
-	}
-
-	if len(db.Tables) != 2 {
-		t.Errorf("expected 2 tables, got %d", len(db.Tables))
-	}
-	if _, ok := db.Tables["users"]; !ok {
-		t.Error("expected table 'users' to exist")
-	}
-	if _, ok := db.Tables["posts"]; !ok {
-		t.Error("expected table 'posts' to exist")
-	}
-	if len(db.Indexes) != 1 {
-		t.Errorf("expected 1 index, got %d", len(db.Indexes))
-	}
-}
-
-func TestReadFiles_FSNestedDirs(t *testing.T) {
-	mockFS := fstest.MapFS{
-		"db/migrations/001.sql": &fstest.MapFile{
-			Data: []byte(`CREATE TABLE a (id INTEGER);`),
-		},
-		"db/migrations/sub/002.sql": &fstest.MapFile{
-			Data: []byte(`CREATE TABLE b (id INTEGER);`),
-		},
-	}
-
-	sub, err := fs.Sub(mockFS, "db/migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := ReadFiles(t.Context(), sub)
-	if err != nil {
-		t.Fatalf("ReadFiles with nested dirs failed: %v", err)
-	}
-
-	if len(db.Tables) != 2 {
-		t.Errorf("expected 2 tables from nested dirs, got %d", len(db.Tables))
-	}
-}
-
-func TestReadFiles_FSNonExistent(t *testing.T) {
-	mockFS := fstest.MapFS{}
-
-	sub, err := fs.Sub(mockFS, "nonexistent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = ReadFiles(t.Context(), sub)
-	if err == nil {
-		t.Error("expected error for non-existent directory in fs")
-	}
-}
-
 func TestFromSQL_WithSchemaQualifiers(t *testing.T) {
-	// Test that SQL with schema qualifiers can be parsed successfully
-	sql := `
+	db, err := FromSQL(t.Context(), `
 		CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
 		CREATE INDEX idx_users_email ON main.users(email);
-	`
+	`)
+	require.NoError(t, err)
 
-	db, err := FromSQL(t.Context(), sql)
-	if err != nil {
-		t.Fatalf("FromSQL() with schema qualifiers failed: %v", err)
-	}
-
-	if len(db.Tables) != 1 {
-		t.Errorf("expected 1 table, got %d", len(db.Tables))
-	}
-	if _, ok := db.Tables["users"]; !ok {
-		t.Error("expected table 'users' to exist")
-	}
-	if len(db.Indexes) != 1 {
-		t.Errorf("expected 1 index, got %d", len(db.Indexes))
-	}
-	if _, ok := db.Indexes["idx_users_email"]; !ok {
-		t.Error("expected index 'idx_users_email' to exist")
-	}
+	assert.Equal(t, []string{"users"}, keys(db.Tables))
+	assert.Equal(t, []string{"idx_users_email"}, keys(db.Indexes))
 }
 
 func TestFromSQL_PreservesMainInStringLiterals(t *testing.T) {
-	sql := `
+	db, err := FromSQL(t.Context(), `
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY,
 			note TEXT DEFAULT 'main.title',
@@ -464,167 +148,26 @@ func TestFromSQL_PreservesMainInStringLiterals(t *testing.T) {
 		);
 		CREATE TRIGGER log_update AFTER UPDATE ON users
 		BEGIN INSERT INTO audit (message) VALUES ('main.users changed'); END;
-	`
-
-	db, err := FromSQL(t.Context(), sql)
-	if err != nil {
-		t.Fatalf("FromSQL() failed: %v", err)
-	}
-
-	table := db.Tables["users"]
-	if table == nil {
-		t.Fatal("users table not found")
-	}
-
-	note := table.GetColumn("note")
-	if note == nil {
-		t.Fatal("note column not found")
-	}
-	if note.Default == nil || *note.Default != "'main.title'" {
-		t.Errorf("default value corrupted: %v", note.Default)
-	}
-
-	trigger := db.Triggers["log_update"]
-	if trigger == nil {
-		t.Fatal("log_update trigger not found")
-	}
-	if !strings.Contains(trigger.SQL, "'main.users changed'") {
-		t.Errorf("trigger SQL corrupted: %s", trigger.SQL)
-	}
-}
-
-func TestFromDirectory_WithSchemaQualifiers(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create SQL files with schema qualifiers
-	files := map[string]string{
-		"01_tables.sql":  `CREATE TABLE http_routers (id INTEGER PRIMARY KEY, name TEXT);`,
-		"02_indexes.sql": `CREATE INDEX idx_router_name ON main.http_routers(name);`,
-	}
-
-	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatalf("ReadFiles() with schema qualifiers failed: %v", err)
-	}
-
-	if len(db.Tables) != 1 {
-		t.Errorf("expected 1 table, got %d", len(db.Tables))
-	}
-	if _, ok := db.Tables["http_routers"]; !ok {
-		t.Error("expected table 'http_routers' to exist")
-	}
-	if len(db.Indexes) != 1 {
-		t.Errorf("expected 1 index, got %d", len(db.Indexes))
-	}
-}
-
-func TestFromDirectory_IndexBeforeTable(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Test the scenario where index file comes alphabetically before table file
-	// This was causing "no such table: main.users" errors
-	files := map[string]string{
-		"00_index.sql": `
-			CREATE INDEX idx_users_email ON users (email);
-			CREATE INDEX idx_users_username ON users (username);
-		`,
-		"01_users.sql": `
-			CREATE TABLE users (
-				id INTEGER PRIMARY KEY,
-				email TEXT NOT NULL,
-				username TEXT NOT NULL
-			);
-		`,
-	}
-
-	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	db, err := ReadFiles(t.Context(), os.DirFS(tmpDir))
-	if err != nil {
-		t.Fatalf("ReadFiles() with index before table failed: %v", err)
-	}
-
-	if len(db.Tables) != 1 {
-		t.Errorf("expected 1 table, got %d", len(db.Tables))
-	}
-	if _, ok := db.Tables["users"]; !ok {
-		t.Error("expected table 'users' to exist")
-	}
-	if len(db.Indexes) != 2 {
-		t.Errorf("expected 2 indexes, got %d", len(db.Indexes))
-	}
-	if _, ok := db.Indexes["idx_users_email"]; !ok {
-		t.Error("expected index 'idx_users_email' to exist")
-	}
-	if _, ok := db.Indexes["idx_users_username"]; !ok {
-		t.Error("expected index 'idx_users_username' to exist")
-	}
-}
-
-func TestFromDB_ExtractsUniqueAndForeignKeyColumns(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-	sqlDB, err := openAndExec(dbPath, `
-		CREATE TABLE users (id INTEGER PRIMARY KEY);
-		CREATE TABLE posts (
-			id INTEGER PRIMARY KEY,
-			slug TEXT NOT NULL,
-			tags TEXT NOT NULL,
-			user_id INTEGER REFERENCES users(id),
-			UNIQUE (slug, tags)
-		);
 	`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sqlDB.Close() }()
+	require.NoError(t, err)
 
-	db, err := FromDB(t.Context(), sqlDB)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NotNil(t, db.Tables["users"])
+	note := db.Tables["users"].GetColumn("note")
+	require.NotNil(t, note)
+	assert.Equal(t, new("'main.title'"), note.Default, "default value corrupted")
 
-	posts := db.Tables["posts"]
-	if posts == nil {
-		t.Fatal("posts table not found")
-	}
-
-	if !slices.Equal(posts.UniqueColumns, []string{"slug", "tags"}) {
-		t.Errorf("UniqueColumns = %v, want [slug tags]", posts.UniqueColumns)
-	}
-	if !slices.Equal(posts.ForeignKeyColumns, []string{"user_id"}) {
-		t.Errorf("ForeignKeyColumns = %v, want [user_id]", posts.ForeignKeyColumns)
-	}
-
-	users := db.Tables["users"]
-	if users == nil {
-		t.Fatal("users table not found")
-	}
-	if len(users.UniqueColumns) != 0 || len(users.ForeignKeyColumns) != 0 {
-		t.Errorf("users should have no unique/FK columns, got %v / %v",
-			users.UniqueColumns, users.ForeignKeyColumns)
-	}
+	require.NotNil(t, db.Triggers["log_update"])
+	assert.Contains(t, db.Triggers["log_update"].SQL, "'main.users changed'", "trigger SQL corrupted")
 }
 
 // TestFromSQL_WeirdSQL feeds hostile SQL through the statement scanner:
-// semicolons inside strings, comments, and quoted identifiers; trigger
-// bodies with CASE and multiple statements; odd line endings and encodings.
+// semicolons inside strings, comments, and quoted identifiers, trigger
+// bodies with CASE and multiple statements, odd line endings and encodings.
 func TestFromSQL_WeirdSQL(t *testing.T) {
 	tests := []struct {
 		name         string
 		sql          string
 		wantTables   []string
-		wantViews    []string
 		wantTriggers []string
 	}{
 		{
@@ -712,12 +255,10 @@ func TestFromSQL_WeirdSQL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := FromSQL(t.Context(), tt.sql)
-			if err != nil {
-				t.Fatalf("FromSQL() error = %v", err)
-			}
-			assertKeys(t, "tables", keys(db.Tables), tt.wantTables)
-			assertKeys(t, "views", keys(db.Views), tt.wantViews)
-			assertKeys(t, "triggers", keys(db.Triggers), tt.wantTriggers)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.wantTables, keys(db.Tables), "tables")
+			assert.Empty(t, db.Views, "views")
+			assert.ElementsMatch(t, tt.wantTriggers, keys(db.Triggers), "triggers")
 		})
 	}
 }
@@ -725,13 +266,17 @@ func TestFromSQL_WeirdSQL(t *testing.T) {
 func TestFromSQL_BlankAndCommentOnly(t *testing.T) {
 	for _, sql := range []string{"", ";;;", "-- nothing\n/* still nothing */", "   \n\t  "} {
 		db, err := FromSQL(t.Context(), sql)
-		if err != nil {
-			t.Fatalf("FromSQL(%q) error = %v", sql, err)
-		}
-		if len(db.Tables)+len(db.Views)+len(db.Triggers) != 0 {
-			t.Errorf("FromSQL(%q) should produce an empty schema", sql)
-		}
+		require.NoError(t, err, "FromSQL(%q)", sql)
+		assert.Empty(t, db.Tables, "FromSQL(%q)", sql)
+		assert.Empty(t, db.Views, "FromSQL(%q)", sql)
+		assert.Empty(t, db.Triggers, "FromSQL(%q)", sql)
 	}
+}
+
+func TestFromSQL_SkipsShadowTables(t *testing.T) {
+	db, err := FromSQL(t.Context(), `CREATE VIRTUAL TABLE f USING fts5(body);`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"f"}, keys(db.Tables), "expected only the virtual table")
 }
 
 func TestParseStatements_TriggerWithExtraWhitespace(t *testing.T) {
@@ -739,17 +284,197 @@ func TestParseStatements_TriggerWithExtraWhitespace(t *testing.T) {
 		"CREATE\n  TRIGGER t AFTER INSERT ON a\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND;\nCREATE TABLE b (id INT);",
 		"x.sql",
 	)
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 statements, got %d: %+v", len(stmts), stmts)
-	}
+	assert.Len(t, stmts, 2)
 }
 
-func TestFromSQL_SkipsShadowTables(t *testing.T) {
-	db, err := FromSQL(t.Context(), `CREATE VIRTUAL TABLE f USING fts5(body);`)
-	if err != nil {
-		t.Fatal(err)
+func TestFromDB(t *testing.T) {
+	schemaSQL := `
+		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE INDEX idx_name ON users(name);
+	`
+	sqlDB := openTestDB(t, schemaSQL)
+
+	fromDB, err := FromDB(t.Context(), sqlDB)
+	require.NoError(t, err)
+	fromSQL, err := FromSQL(t.Context(), schemaSQL)
+	require.NoError(t, err)
+
+	assert.Equal(t, keys(fromSQL.Tables), keys(fromDB.Tables))
+	assert.Equal(t, keys(fromSQL.Indexes), keys(fromDB.Indexes))
+}
+
+func TestFromDB_ExtractsUniqueAndForeignKeyColumns(t *testing.T) {
+	sqlDB := openTestDB(t, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY);
+		CREATE TABLE posts (
+			id INTEGER PRIMARY KEY,
+			slug TEXT NOT NULL,
+			tags TEXT NOT NULL,
+			user_id INTEGER REFERENCES users(id),
+			UNIQUE (slug, tags)
+		);
+	`)
+
+	db, err := FromDB(t.Context(), sqlDB)
+	require.NoError(t, err)
+
+	posts := db.Tables["posts"]
+	require.NotNil(t, posts)
+	assert.Equal(t, []string{"slug", "tags"}, posts.UniqueColumns)
+	assert.Equal(t, []string{"user_id"}, posts.ForeignKeyColumns)
+
+	users := db.Tables["users"]
+	require.NotNil(t, users)
+	assert.Empty(t, users.UniqueColumns)
+	assert.Empty(t, users.ForeignKeyColumns)
+}
+
+func TestReadFiles(t *testing.T) {
+	db, err := ReadFiles(t.Context(), writeDir(t, map[string]string{
+		"01_users.sql": `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`,
+		"02_posts.sql": `CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`,
+		"03_index.sql": `CREATE INDEX idx_posts_user ON posts(user_id);`,
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"posts", "users"}, keys(db.Tables))
+	assert.Equal(t, []string{"idx_posts_user"}, keys(db.Indexes))
+}
+
+func TestReadFiles_Nested(t *testing.T) {
+	db, err := ReadFiles(t.Context(), writeDir(t, map[string]string{
+		"01.sql":            `CREATE TABLE a (id INTEGER);`,
+		"migrations/02.sql": `CREATE TABLE b (id INTEGER);`,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, keys(db.Tables))
+}
+
+func TestReadFiles_Empty(t *testing.T) {
+	db, err := ReadFiles(t.Context(), os.DirFS(t.TempDir()))
+	require.NoError(t, err)
+	assert.Empty(t, db.Tables)
+}
+
+func TestReadFiles_NonExistent(t *testing.T) {
+	_, err := ReadFiles(t.Context(), os.DirFS("/nonexistent/path"))
+	assert.Error(t, err)
+}
+
+func TestReadFiles_InvalidSQL(t *testing.T) {
+	_, err := ReadFiles(t.Context(), writeDir(t, map[string]string{"bad.sql": `INVALID SQL`}))
+	assert.Error(t, err)
+}
+
+func TestReadFiles_IgnoresNonSQL(t *testing.T) {
+	db, err := ReadFiles(t.Context(), writeDir(t, map[string]string{
+		"01_valid.sql": `CREATE TABLE t1(id INT);`,
+		"README.md":    `This should be ignored`,
+		".config":      `ignored`,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"t1"}, keys(db.Tables))
+}
+
+func TestReadFiles_WithSchemaQualifiers(t *testing.T) {
+	db, err := ReadFiles(t.Context(), writeDir(t, map[string]string{
+		"01_tables.sql":  `CREATE TABLE http_routers (id INTEGER PRIMARY KEY, name TEXT);`,
+		"02_indexes.sql": `CREATE INDEX idx_router_name ON main.http_routers(name);`,
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"http_routers"}, keys(db.Tables))
+	assert.Equal(t, []string{"idx_router_name"}, keys(db.Indexes))
+}
+
+// TestReadFiles_IndexBeforeTable covers an index file that sorts before
+// its table file, which used to fail with "no such table: main.users".
+func TestReadFiles_IndexBeforeTable(t *testing.T) {
+	db, err := ReadFiles(t.Context(), writeDir(t, map[string]string{
+		"00_index.sql": `
+			CREATE INDEX idx_users_email ON users (email);
+			CREATE INDEX idx_users_username ON users (username);
+		`,
+		"01_users.sql": `
+			CREATE TABLE users (
+				id INTEGER PRIMARY KEY,
+				email TEXT NOT NULL,
+				username TEXT NOT NULL
+			);
+		`,
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"users"}, keys(db.Tables))
+	assert.Equal(t, []string{"idx_users_email", "idx_users_username"}, keys(db.Indexes))
+}
+
+func TestReadFiles_FS(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"schema/01_users.sql": {Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)},
+		"schema/02_posts.sql": {
+			Data: []byte(`CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));`),
+		},
+		"schema/03_index.sql": {Data: []byte(`CREATE INDEX idx_posts_user ON posts(user_id);`)},
 	}
-	if len(db.Tables) != 1 || db.Tables["f"] == nil {
-		t.Fatalf("expected only the virtual table, got %v", slices.Collect(maps.Keys(db.Tables)))
+
+	sub, err := fs.Sub(mockFS, "schema")
+	require.NoError(t, err)
+	db, err := ReadFiles(t.Context(), sub)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"posts", "users"}, keys(db.Tables))
+	assert.Equal(t, []string{"idx_posts_user"}, keys(db.Indexes))
+}
+
+func TestReadFiles_FSNestedDirs(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"db/migrations/001.sql":     {Data: []byte(`CREATE TABLE a (id INTEGER);`)},
+		"db/migrations/sub/002.sql": {Data: []byte(`CREATE TABLE b (id INTEGER);`)},
 	}
+
+	sub, err := fs.Sub(mockFS, "db/migrations")
+	require.NoError(t, err)
+	db, err := ReadFiles(t.Context(), sub)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"a", "b"}, keys(db.Tables))
+}
+
+func TestReadFiles_FSNonExistent(t *testing.T) {
+	sub, err := fs.Sub(fstest.MapFS{}, "nonexistent")
+	require.NoError(t, err)
+
+	_, err = ReadFiles(t.Context(), sub)
+	assert.Error(t, err)
+}
+
+// keys returns the sorted keys of m.
+func keys[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
+}
+
+// writeDir writes files (path -> content) into a temp dir and returns it.
+func writeDir(t *testing.T, files map[string]string) fs.FS {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	}
+	return os.DirFS(dir)
+}
+
+// openTestDB creates a database file with the given schema. It is closed
+// when the test ends.
+func openTestDB(t *testing.T, schema string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	_, err = db.Exec(schema)
+	require.NoError(t, err)
+	return db
 }
