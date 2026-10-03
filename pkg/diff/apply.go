@@ -74,10 +74,23 @@ func ApplyChanges(ctx context.Context, db *sql.DB, changes []Change, backupPath 
 }
 
 // createBackup writes to a temporary file first, so a failed backup never
-// destroys the previous one.
+// destroys the previous one. The copy gets the mode of the database file, it
+// must not be readable by anyone the database itself is not.
 func createBackup(ctx context.Context, conn *sql.Conn, backupPath string) error {
+	mode, err := databaseMode(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
 	tmpPath := backupPath + ".tmp"
 	_ = os.Remove(tmpPath)
+	// VACUUM INTO fills an existing empty file, so the mode is set before any data lands.
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
+	if err := errors.Join(f.Chmod(mode), f.Close()); err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
 	safePath := strings.ReplaceAll(tmpPath, "'", "''")
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", safePath)); err != nil {
 		return fmt.Errorf("create backup: %w", err)
@@ -86,6 +99,23 @@ func createBackup(ctx context.Context, conn *sql.Conn, backupPath string) error 
 		return fmt.Errorf("create backup: %w", err)
 	}
 	return nil
+}
+
+// databaseMode is the permission of the main database file, 0600 for a database without one.
+func databaseMode(ctx context.Context, conn *sql.Conn) (os.FileMode, error) {
+	var file string
+	err := conn.QueryRowContext(ctx, "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&file)
+	if err != nil {
+		return 0, err
+	}
+	if file == "" {
+		return 0o600, nil
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return 0, err
+	}
+	return info.Mode().Perm(), nil
 }
 
 func migrate(ctx context.Context, conn *sql.Conn, changes []Change) error {

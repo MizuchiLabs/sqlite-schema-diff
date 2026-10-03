@@ -69,6 +69,22 @@ func TestApply_Backup(t *testing.T) {
 		"backup should have the original schema")
 }
 
+func TestApply_BackupKeepsTheDatabaseMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o640} {
+		db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
+		require.NoError(t, os.Chmod(dbPath, mode))
+		schemaDir := createSchemaDir(t, "users.sql", `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`)
+
+		backupPath := dbPath + ".backup"
+		_, err := Apply(t.Context(), db, schemaDir, ApplyOptions{BackupPath: backupPath})
+		require.NoError(t, err)
+
+		info, err := os.Stat(backupPath)
+		require.NoError(t, err)
+		assert.Equal(t, mode, info.Mode().Perm(), "the backup is as private as the database")
+	}
+}
+
 func TestApply_NoBackupWhenEmpty(t *testing.T) {
 	db, dbPath := newTestDB(t, `CREATE TABLE users (id INTEGER PRIMARY KEY);`)
 	schemaDir := createSchemaDir(

@@ -163,7 +163,7 @@ func main() {
 
 To keep your data safe, `apply` follows a fixed sequence:
 
-1. **Backup** (unless `--backup=false`): creates `app.db.backup` via `VACUUM INTO` before touching anything.
+1. **Backup** (unless `--backup=false`): creates `app.db.backup` via `VACUUM INTO` before touching anything. The backup gets the file mode of the database.
 2. **Single transaction**: all statements run on one connection inside one transaction. The transaction is started with `BEGIN IMMEDIATE`, so a concurrent writer fails fast instead of deadlocking, and the connection waits up to 5 seconds for other writers (busy timeout). An interruption rolls everything back, including on Ctrl-C.
 3. **Foreign keys disabled** for the duration of the migration and restored afterwards (only if they were enabled before). `legacy_alter_table` is turned on the same way, so recreating a table does not trip over views and triggers that reference it.
 4. **Foreign key check** before commit: if the migrated schema would violate a foreign key, the transaction is rolled back with an error instead of committing broken data.
