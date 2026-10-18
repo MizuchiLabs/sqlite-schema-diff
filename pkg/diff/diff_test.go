@@ -1076,6 +1076,48 @@ func TestDiff_ExistingConstraintKeepsAddColumn(t *testing.T) {
 	assert.Equal(t, []ChangeType{AddColumn}, changeTypes(diffTableColumns(from, to)))
 }
 
+func TestDiff_RenameColumnNamedInLiteral(t *testing.T) {
+	from := &schema.Table{
+		Name: "t",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "name", Type: "TEXT", Default: new("'name'")},
+		},
+		SQL: `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT DEFAULT 'name')`,
+	}
+	to := &schema.Table{
+		Name: "t",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "title", Type: "TEXT", Default: new("'name'")},
+		},
+		SQL: `CREATE TABLE t (id INTEGER PRIMARY KEY, title TEXT DEFAULT 'name')`,
+	}
+
+	assert.Equal(t, []ChangeType{RenameColumn}, changeTypes(diffTableColumns(from, to)))
+}
+
+func TestDiff_RenameWithChangedLiteralRecreates(t *testing.T) {
+	from := &schema.Table{
+		Name: "t",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "name", Type: "TEXT"},
+		},
+		SQL: `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, CHECK (name <> 'a'))`,
+	}
+	to := &schema.Table{
+		Name: "t",
+		Columns: []schema.Column{
+			{Name: "id", Type: "INTEGER", PrimaryKey: 1},
+			{Name: "title", Type: "TEXT"},
+		},
+		SQL: `CREATE TABLE t (id INTEGER PRIMARY KEY, title TEXT, CHECK (title <> 'b'))`,
+	}
+
+	assert.Equal(t, []ChangeType{RecreateTable}, changeTypes(diffTableColumns(from, to)))
+}
+
 // TestDiff_CaseOnlyRename pins the rename-not-drop behavior: SQLite table
 // names are case-insensitive, so changing the case in the schema must
 // produce a RENAME_TABLE instead of a destructive drop + create.

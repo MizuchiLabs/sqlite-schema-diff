@@ -206,8 +206,11 @@ func diffTableColumns(from, to *schema.Table) []Change {
 
 		// Ensure column properties match
 		if !columnChanged(oldCol, newCol) {
-			fromNorm := normalizeSQL(from.SQL)
-			toNorm := normalizeSQL(to.SQL)
+			// Literals stay masked so the rename regex can't rewrite their content.
+			fromMasked, fromLits := maskLiterals(from.SQL)
+			toMasked, toLits := maskLiterals(to.SQL)
+			fromNorm := performNormalization(fromMasked)
+			toNorm := performNormalization(toMasked)
 
 			// Replace old column name with new column name in normalized SQL
 			// Use regex to ensure word boundaries
@@ -218,7 +221,7 @@ func diffTableColumns(from, to *schema.Table) []Change {
 			// A drop plus an add of a matching column is indistinguishable
 			// from a rename. Guess rename to keep the data, but mark it
 			// destructive so it needs confirmation.
-			if fromNormRenamed == toNorm {
+			if fromNormRenamed == toNorm && slices.Equal(fromLits, toLits) {
 				return []Change{{
 					Type:   RenameColumn,
 					Object: from.Name,
