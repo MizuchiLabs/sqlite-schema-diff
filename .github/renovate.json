@@ -1,4 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>MizuchiLabs/.github"]
+  "extends": ["local>MizuchiLabs/.github"],
+  "packageRules": [
+    {
+      "description": "Also a library, the go line is the minimum for importers and gets raised by hand",
+      "matchDepTypes": ["golang"],
+      "enabled": false
+    }
+  ]
 }
