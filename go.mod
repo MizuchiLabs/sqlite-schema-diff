@@ -2,7 +2,7 @@ module github.com/mizuchilabs/sqlite-schema-diff
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/mizuchilabs/kata v0.2.0
