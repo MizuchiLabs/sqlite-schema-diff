@@ -5,10 +5,10 @@ go 1.26.0
 toolchain go1.27.4
 
 require (
-	github.com/mizuchilabs/kata v0.2.0
+	github.com/mizuchilabs/kata v0.2.1
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.14.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
